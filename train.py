@@ -273,7 +273,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     # DDP mode
     if cuda and RANK != -1:
-        model = DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
+        # model = DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
         autoencoder = DDP(autoencoder, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
 
     # Model parameters
