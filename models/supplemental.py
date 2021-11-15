@@ -14,8 +14,8 @@ class Encoder(nn.Module):
         
 
     def forward(self, x):
-        # return self.act2(self.conv2(self.act1(self.conv1(x))))
-        return self.act2(self.conv2(self.conv1(x)))
+        return self.act2(self.conv2(self.act1(self.conv1(x))))
+        # return self.act2(self.conv2(self.conv1(x)))
 
 
 class Decoder(nn.Module):

@@ -57,6 +57,7 @@ LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable
 RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 
+print(LOCAL_RANK, RANK, WORLD_SIZE)
 
 def train(hyp,  # path/to/hyp.yaml or hyp dictionary
           opt,
@@ -149,6 +150,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         if any(f'{x}.' in k for x in freeze):
             LOGGER.info(f'freezing {k}')
             v.requires_grad = False
+    freeze = freeze[:-1]
 
     # Image size
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
@@ -456,7 +458,10 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
+    # del model, autoencoder
+
     if RANK in [-1, 0]:
+        del model, autoencoder
         LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
         for f in last, best:
             if f.exists():

@@ -16,7 +16,7 @@ from threading import Thread
 import numpy as np
 import torch
 from tqdm import tqdm
-import torchjpeg.dct as dct
+# import torchjpeg.dct as dct
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory

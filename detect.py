@@ -3,13 +3,7 @@
 Run inference on images, videos, directories, streams, etc.
 
 Usage:
-    $ python path/to/detect.py --weights yolov5s.pt --source 0  # webcam
-                                                             img.jpg  # image
-                                                             vid.mp4  # video
-                                                             path/  # directory
-                                                             path/*.jpg  # glob
-                                                             'https://youtu.be/Zgi9g1ksQHc'  # YouTube
-                                                             'rtsp://example.com/media.mp4'  # RTSP, RTMP, HTTP stream
+    $ python path/to/detect.py --source path/to/img.jpg --weights yolov5s.pt --img 640
 """
 
 import argparse
@@ -32,9 +26,9 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 from models.experimental import attempt_load
 from utils.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
 from utils.general import (LOGGER, apply_classifier, check_file, check_img_size, check_imshow, check_requirements,
-                           check_suffix, colorstr, increment_path, non_max_suppression, print_args, scale_coords,
-                           strip_optimizer, xyxy2xywh)
-from utils.plots import Annotator, colors, save_one_box
+                           check_suffix, colorstr, increment_path, non_max_suppression, print_args, save_one_box,
+                           scale_coords, strip_optimizer, xyxy2xywh)
+from utils.plots import Annotator, colors
 from utils.torch_utils import load_classifier, select_device, time_sync
 
 
