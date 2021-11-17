@@ -150,7 +150,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         if any(f'{x}.' in k for x in freeze):
             LOGGER.info(f'freezing {k}')
             v.requires_grad = False
-    freeze = freeze[:-1]
+    # freeze = freeze[:-1]
 
     # Image size
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
