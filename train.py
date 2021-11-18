@@ -219,7 +219,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             ema.updates = ckpt['updates']
 
         # Epochs
-        start_epoch = ckpt['epoch'] + 1
+        # start_epoch = ckpt['epoch'] + 1
         if resume:
             assert start_epoch > 0, f'{weights} training to {epochs} epochs is finished, nothing to resume.'
         if epochs < start_epoch:
@@ -289,7 +289,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     # Start training
     t0 = time.time()
-    nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
+    # nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
+    nw = round(hyp['warmup_epochs'] * nb)  # number of warmup iterations, max(3 epochs, 1k iterations)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
     last_opt_step = -1
     maps = np.zeros(nc)  # mAP per class
