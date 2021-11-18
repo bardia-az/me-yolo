@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
+from models.supplemental import AutoEncoder
 from utils.datasets import create_dataloader
 from utils.general import (LOGGER, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
@@ -106,13 +107,15 @@ def run(data,
         gauss_var=1,
         uniform_len=1,
         arbitrary_dist=None,
+        autoenc_chs=None,
+        supp_weights=None,  # model.pt path(s)
         model=None,
         dataloader=None,
         save_dir=Path(''),
         plots=True,
         callbacks=Callbacks(),
         compute_loss=None,
-        autoencoder=None
+        autoencoder=None,
         ):
     # Initialize/load model and set device
     training = model is not None
@@ -145,8 +148,20 @@ def run(data,
     half &= device.type != 'cpu'  # half precision only supported on CUDA
     model.half() if half else model.float()
 
+    # Loading Autoencoder
+    if supp_weights is not None:
+        autoenc_pretrained = supp_weights.endswith('.pt')
+        if autoenc_pretrained:
+            autoencoder = AutoEncoder(autoenc_chs).to(device)
+            supp_ckpt = torch.load(supp_weights, map_location=device)
+            autoencoder.load_state_dict(supp_ckpt['model'])
+            print('pretrained autoencoder')
+            del supp_ckpt
+            autoencoder.half() if half else autoencoder.float()
+
     # Configure
     model.eval()
+    autoencoder.eval()
     is_coco = isinstance(data.get('val'), str) and data['val'].endswith('coco/val2017.txt')  # COCO dataset
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
@@ -406,8 +421,11 @@ def parse_opt():
     parser.add_argument('--noise-type', default='uniform', choices=['uniform', 'gaussian', 'uni_gaussian', 'arbitrary'], help='type of the added noise')
     parser.add_argument('--gauss-var', type=float, default=1, help='variance of the gaussian noise')
     parser.add_argument('--uniform-len', type=float, default=1, help='the length of the uniform distribution')
-    parser.add_argument('--arbitrary-dist', default='Noise_Distributions/QP_10.npy', help='the numpy file containing the distribution')
+    parser.add_argument('--arbitrary-dist', default=None, help='the numpy file containing the distribution')
 
+    # Supplemental arguments
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
+    parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
