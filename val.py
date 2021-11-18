@@ -158,10 +158,10 @@ def run(data,
             print('pretrained autoencoder')
             del supp_ckpt
             autoencoder.half() if half else autoencoder.float()
+            autoencoder.eval()
 
     # Configure
     model.eval()
-    autoencoder.eval()
     is_coco = isinstance(data.get('val'), str) and data['val'].endswith('coco/val2017.txt')  # COCO dataset
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
