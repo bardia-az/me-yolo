@@ -64,9 +64,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
           device,
           callbacks
           ):
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, supp_weights= \
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, supp_weights, train_yolo= \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
-        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.supp_weights
+        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.supp_weights, opt.train_yolo
 
     # Directories
     w = save_dir / 'weights'  # weights dir
@@ -128,7 +128,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         LOGGER.info(f'Transferred {len(csd)}/{len(model.state_dict())} items from {weights}')  # report
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
-    # print(opt.autoenc_chs)
     autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
     
     autoenc_pretrained = False
@@ -140,7 +139,15 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             print('pretrained autoencoder')
             del supp_ckpt
     
-
+    if(train_yolo=='all'):
+        freeze = 0
+    elif(train_yolo=='backend'):
+        freeze = 5
+    elif(train_yolo=='nothing'):
+        # freeze = 34 if (pretrained and weights[-4]=='6') else 25  
+        freeze = 34     #FIXME for now we supposed that all the models are the big one
+    else:
+        raise Exception(f'train-yolo={train_yolo} is not supported')
     # Freeze
     # freeze = [f'model.{x}.' for x in range(freeze)]  # layers to freeze
     freeze = [f'model.{x}' for x in range(freeze)]  # layers to freeze
@@ -150,7 +157,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         if any(f'{x}.' in k for x in freeze):
             LOGGER.info(f'freezing {k}')
             v.requires_grad = False
-    # freeze = freeze[:-1]
+    if(train_yolo=='nothing'):  # the last layer(detection) should not be in the eval mode 
+        freeze = freeze[:-1]
 
     # Image size
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
@@ -221,6 +229,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         # Epochs
         # start_epoch = ckpt['epoch'] + 1
         if resume:
+            start_epoch = ckpt['epoch'] + 1
             assert start_epoch > 0, f'{weights} training to {epochs} epochs is finished, nothing to resume.'
         if epochs < start_epoch:
             LOGGER.info(f"{weights} has been trained for {ckpt['epoch']} epochs. Fine-tuning for {epochs} more epochs.")
@@ -273,7 +282,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     # DDP mode
     if cuda and RANK != -1:
-        # model = DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
+        if(train_yolo!='nothing'):
+            model = DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
         autoencoder = DDP(autoencoder, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
 
     # Model parameters
@@ -542,6 +552,7 @@ def parse_opt(known=False):
     # Supplemental arguments
     parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
+    parser.add_argument('--train-yolo', type=str, default='all', help='which part of the yolo gets trained: backend, all, nothing')
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
     return opt
