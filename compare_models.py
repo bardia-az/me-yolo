@@ -75,12 +75,17 @@ def compare_models(model_1, model_2):
 
 
 if __name__ == "__main__":
-    ckpt = torch.load('runs/train/backend_train_prevCode/weights/last.pt')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model1', type=str, default=None, help='model1 weights path')
+    parser.add_argument('--model2', type=str, default=None, help='model2 weights path')
+    args = parser.parse_args()
+
+    ckpt = torch.load(args.model1)
     model = Model(cfg='models/hub/yolov5x6.yaml', ch=3)  # create
     csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
     model.load_state_dict(csd, strict=False)  # load
 
-    ckpt2 = torch.load('yolov5x6.pt')
+    ckpt2 = torch.load(args.model2)
     model2 = Model(cfg='models/hub/yolov5x6.yaml', ch=3) # create
     csd2 = ckpt2['model'].float().state_dict()  # checkpoint state_dict as FP32
     model2.load_state_dict(csd2, strict=False)  # load
