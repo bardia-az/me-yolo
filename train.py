@@ -316,10 +316,10 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
         # model.eval()
-        for k, m in model.named_modules():
-            if any(x == k for x in freeze):
-                # print(f'{k} \t => {m}')
-                m.eval()
+        # for k, m in model.named_modules():
+        #     if any(x == k for x in freeze):
+        #         # print(f'{k} \t => {m}')
+        #         m.eval()
 
         # Update image weights (optional, single-GPU only)
         if opt.image_weights:
