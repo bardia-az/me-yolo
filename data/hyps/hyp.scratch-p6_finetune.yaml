@@ -10,7 +10,7 @@ lrf: 0.15  # final OneCycleLR learning rate (lr0 * lrf)            default
 # lrf: 0.5  # final OneCycleLR learning rate (lr0 * lrf)
 momentum: 0.937  # SGD momentum/Adam beta1
 weight_decay: 0.0005  # optimizer weight decay 5e-4
-warmup_epochs: 2.0  # warmup epochs (fractions ok)
+warmup_epochs: -1.0  # warmup epochs (fractions ok)
 warmup_momentum: 0.8  # warmup initial momentum
 warmup_bias_lr: 0.1  # warmup initial bias lr
 box: 0.05  # box loss gain
