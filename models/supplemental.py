@@ -10,7 +10,8 @@ class Encoder(nn.Module):
         self.conv1 = nn.Conv2d(chs[0], chs[1], k, s, autopad(k, p), bias=False)
         self.act1 = nn.SiLU()
         self.conv2 = nn.Conv2d(chs[1], chs[2], k, s, autopad(k, p), bias=False)
-        self.act2 = nn.Sigmoid()
+        # self.act2 = nn.Sigmoid()
+        self.act2 = nn.SiLU()
         
 
     def forward(self, x):
