@@ -1,6 +1,7 @@
 # supplementary DNN modules
 
 from models.common import *
+from utils.plots import feature_visualization
 
 
 
@@ -9,28 +10,27 @@ class Encoder(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(chs[0], chs[1], k, s, autopad(k, p), bias=False)
         self.act1 = nn.SiLU()
-        # self.conv2 = nn.Conv2d(chs[1], chs[2], k, s, autopad(k, p), bias=False)
+        self.conv2 = nn.Conv2d(chs[1], chs[2], k, s, autopad(k, p), bias=False)
         # self.act2 = nn.Sigmoid()
-        # self.act2 = nn.SiLU()
+        self.act2 = nn.SiLU()
         
 
     def forward(self, x):
-        # return self.act2(self.conv2(self.act1(self.conv1(x))))
-        return self.act1(self.conv1(x))
-        # return self.act2(self.conv2(self.conv1(x)))
+        return self.act2(self.conv2(self.act1(self.conv1(x))))
+        # return self.act1(self.conv1(x))
 
 
 class Decoder(nn.Module):
     def __init__(self, chs, k=1, s=1, p=None):
         super().__init__()
-        # self.conv1 = nn.Conv2d(chs[2], chs[1], k, s, autopad(k, p), bias=False)
-        # self.act1 = nn.SiLU()
+        self.conv1 = nn.Conv2d(chs[2], chs[1], k, s, autopad(k, p), bias=False)
+        self.act1 = nn.SiLU()
         self.conv2 = nn.Conv2d(chs[1], chs[0], k, s, autopad(k, p), bias=False)
         self.act2 = nn.SiLU()
 
     def forward(self, x):
-        # return self.act2(self.conv2(self.act1(self.conv1(x))))
-        return self.act2(self.conv2(x))
+        return self.act2(self.conv2(self.act1(self.conv1(x))))
+        # return self.act2(self.conv2(x))
 
 
 class AutoEncoder(nn.Module):
@@ -41,8 +41,11 @@ class AutoEncoder(nn.Module):
         self.enc = Encoder(chs, k=3)
         self.dec = Decoder(chs, k=3)
 
-    def forward(self, x):
-        return self.dec(self.enc(x))
+    def forward(self, x, visualize=False):
+        x = self.enc(x)
+        if visualize:
+            feature_visualization(x, 'encoder', 'output', save_dir=visualize, cut_model='1.5')
+        return self.dec(x)
 
 
 
