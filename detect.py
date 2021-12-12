@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
+from models.supplemental import AutoEncoder
 from utils.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
 from utils.general import (LOGGER, apply_classifier, check_file, check_img_size, check_imshow, check_requirements,
                            check_suffix, colorstr, increment_path, non_max_suppression, print_args, save_one_box,
@@ -58,6 +59,8 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         hide_conf=False,  # hide confidences
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
+        autoenc_chs=None,   # number of channels in the auto encoder
+        supp_weights=None,  # autoencoder model.pt path(s)
         ):
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
@@ -126,6 +129,20 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
             int8 = input_details[0]['dtype'] == np.uint8  # is TFLite quantized uint8 model
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
+    # Loading Autoencoder
+    autoencoder = None
+    if supp_weights is not None:
+        autoenc_pretrained = supp_weights.endswith('.pt')
+        if autoenc_pretrained:
+            autoencoder = AutoEncoder(autoenc_chs).to(device)
+            supp_ckpt = torch.load(supp_weights, map_location=device)
+            autoencoder.load_state_dict(supp_ckpt['model'])
+            print('pretrained autoencoder')
+            del supp_ckpt
+            if half:
+                autoencoder.half()
+            autoencoder.eval()
+
     # Dataloader
     if webcam:
         view_img = check_imshow()
@@ -157,7 +174,12 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         # Inference
         if pt:
             visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
-            pred = model(img, augment=augment, visualize=visualize)[0]
+            if(autoencoder is not None):
+                T = model(img, augment=augment, cut_model=1, visualize=visualize)  # first half of the model
+                T_hat = autoencoder(T, visualize=visualize) 
+                pred = model(None, cut_model=2, T=T_hat, visualize=visualize)[0]  # second half of the model  
+            else:
+                pred = model(img, augment=augment, visualize=visualize)[0]
         elif onnx:
             if dnn:
                 net.setInput(img)
@@ -301,6 +323,11 @@ def parse_opt():
     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
+
+    # Supplemental arguments
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
+    parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
+
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     print_args(FILE.stem, opt)

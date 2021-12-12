@@ -420,7 +420,7 @@ def plot_results(file='path/to/results.csv', dir=''):
     plt.close()
 
 
-def feature_visualization(x, module_type, stage, n=32, save_dir=Path('runs/detect/exp')):
+def feature_visualization(x, module_type, stage, n=64, save_dir=Path('runs/detect/exp'), cut_model=0):
     """
     x:              Features to be visualized
     module_type:    Module type
@@ -431,16 +431,28 @@ def feature_visualization(x, module_type, stage, n=32, save_dir=Path('runs/detec
     if 'Detect' not in module_type:
         batch, channels, height, width = x.shape  # batch, channels, height, width
         if height > 1 and width > 1:
-            f = f"stage{stage}_{module_type.split('.')[-1]}_features.png"  # filename
+            f = f"stage{stage}_{module_type.split('.')[-1]}_{cut_model}_features.png"  # filename
 
             blocks = torch.chunk(x[0].cpu(), channels, dim=0)  # select batch index 0, block by channels
             n = min(n, channels)  # number of plots
-            fig, ax = plt.subplots(math.ceil(n / 8), 8, tight_layout=True)  # 8 rows x n/8 cols
+            fig, ax = plt.subplots(math.ceil(n / 8), 8, tight_layout=False)  # 8 rows x n/8 cols
             ax = ax.ravel()
-            plt.subplots_adjust(wspace=0.05, hspace=0.05)
+            # plt.subplots_adjust(wspace=0.01, hspace=0.01)
+            
+            images = []
             for i in range(n):
-                ax[i].imshow(blocks[i].squeeze())  # cmap='gray'
+                images.append(ax[i].imshow(blocks[i].squeeze()))  # cmap='gray'
                 ax[i].axis('off')
+
+            vmin = min(image.get_array().min() for image in images)
+            vmax = max(image.get_array().max() for image in images)
+            norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+            for im in images:
+                im.set_norm(norm)
+
+            fig.subplots_adjust(right=0.8)
+            cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+            plt.colorbar(images[0], cax=cbar_ax, ax=ax, use_gridspec=True)
 
             print(f'Saving {save_dir / f}... ({n}/{channels})')
             plt.savefig(save_dir / f, dpi=300, bbox_inches='tight')
