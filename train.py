@@ -64,9 +64,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
           device,
           callbacks
           ):
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, supp_weights, train_yolo= \
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, supp_weights, train_yolo, freeze_autoenc= \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
-        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.supp_weights, opt.train_yolo
+        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.supp_weights, opt.train_yolo, opt.freeze_autoenc
 
     # Directories
     w = save_dir / 'weights'  # weights dir
@@ -138,6 +138,10 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             autoencoder.load_state_dict(supp_ckpt['model'])
             print('pretrained autoencoder')
             del supp_ckpt
+
+    if freeze_autoenc:
+        for param in autoencoder.parameters():
+            param.requires_grad = False
     
     if(train_yolo=='all'):
         freeze = 0
@@ -282,9 +286,10 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     # DDP mode
     if cuda and RANK != -1:
-        if(train_yolo!='nothing'):
+        if train_yolo!='nothing':
             model = DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
-        autoencoder = DDP(autoencoder, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
+        if not freeze_autoenc:
+            autoencoder = DDP(autoencoder, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
 
     # Model parameters
     nl = de_parallel(model).model[-1].nl  # number of detection layers (to scale hyps)
@@ -554,6 +559,7 @@ def parse_opt(known=False):
     parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--train-yolo', type=str, default='all', help='which part of the yolo gets trained: backend, all, nothing')
+    parser.add_argument('--freeze-autoenc', action='store_true', help='determins autoencoder weights to be freezed')
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
     return opt
