@@ -8,7 +8,15 @@ import torch.nn as nn
 
 from utils.metrics import bbox_iou
 from utils.torch_utils import is_parallel
+from torch.nn.functional import mse_loss, l1_loss
 
+
+
+def compute_loss_me(T1, T2, device):
+    loss_l1, loss_l2 = torch.zeros(1, device=device), torch.zeros(1, device=device)
+    loss_l1[0] = l1_loss(T1, T2)
+    loss_l2[0] = mse_loss(T1, T2)
+    return loss_l1, torch.cat((loss_l1, loss_l2)).detach()
 
 def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441
     # return positive, negative label smoothing BCE targets

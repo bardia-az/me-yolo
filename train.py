@@ -144,8 +144,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     elif(train_yolo=='backend'):
         freeze = 5
     elif(train_yolo=='nothing'):
-        # freeze = 34 if (pretrained and weights[-4]=='6') else 25  
-        freeze = 34     #FIXME for now we supposed that all the models are the big one
+        freeze = 34 if (pretrained and opt.weights[-4]=='6') else 25  
+        # freeze = 34     #FIXME for now we supposed that all the models are the big one
     else:
         raise Exception(f'train-yolo={train_yolo} is not supported')
     # Freeze
