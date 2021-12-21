@@ -93,24 +93,27 @@ def exif_transpose(image):
 
 def load_image_me(path, flr=False, fud=False, imgsz=1024):
     path_name = str(path)
-    im = cv2.imread(path_name)
-    # cv2.imshow('original', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
-    assert im is not None, f'Image Not Found {path}'
-    if flr and fud:
-        im = cv2.flip(im, -1)
-    elif flr:
-        im = cv2.flip(im, 1)
-    elif fud:
-        im = cv2.flip(im, 0)
-    h0, w0 = im.shape[:2]
-    # cv2.imshow('flipped', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
-    interpolation = cv2.INTER_AREA if imgsz<h0 and imgsz<w0 else cv2.INTER_LINEAR
-    im = cv2.resize(im, (imgsz,imgsz), interpolation=interpolation)
-    # cv2.imshow('resized', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
-    im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-    # cv2.imshow('transposed', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
-    im = np.ascontiguousarray(im)
-    return torch.from_numpy(im)
+    try:
+        im = cv2.imread(path_name)
+        # cv2.imshow('original', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
+        assert im is not None, f'Image Not Found {path}'
+        if flr and fud:
+            im = cv2.flip(im, -1)
+        elif flr:
+            im = cv2.flip(im, 1)
+        elif fud:
+            im = cv2.flip(im, 0)
+        h0, w0 = im.shape[:2]
+        # cv2.imshow('flipped', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
+        interpolation = cv2.INTER_AREA if imgsz<h0 and imgsz<w0 else cv2.INTER_LINEAR
+        im = cv2.resize(im, (imgsz,imgsz), interpolation=interpolation)
+        # cv2.imshow('resized', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
+        im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        # cv2.imshow('transposed', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
+        im = np.ascontiguousarray(im)
+        return torch.from_numpy(im)
+    except Exception as e:
+        return torch.zeros((3,imgsz,imgsz))
 
 def create_me_dataloader(list_path, imgsz, batch_size, rank=-1, workers=8, shuffle=False):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
@@ -133,7 +136,8 @@ class LoadImagesForME(Dataset):
         with open(list_path) as f:
             for line in f:
                 folder_path = line.strip()
-                self.data_path.append(list_path.parent / 'sequences' / folder_path)
+                if len(folder_path) != 0:
+                    self.data_path.append(list_path.parent / 'sequences' / folder_path)
 
     def __len__(self):
         return len(self.data_path)
