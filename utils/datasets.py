@@ -94,6 +94,7 @@ def exif_transpose(image):
 def load_image_me(path, flr=False, fud=False, imgsz=1024):
     path_name = str(path)
     im = cv2.imread(path_name)
+    # cv2.imshow('original', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
     assert im is not None, f'Image Not Found {path}'
     if flr and fud:
         im = cv2.flip(im, -1)
@@ -102,9 +103,12 @@ def load_image_me(path, flr=False, fud=False, imgsz=1024):
     elif fud:
         im = cv2.flip(im, 0)
     h0, w0 = im.shape[:2]
+    # cv2.imshow('flipped', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
     interpolation = cv2.INTER_AREA if imgsz<h0 and imgsz<w0 else cv2.INTER_LINEAR
     im = cv2.resize(im, (imgsz,imgsz), interpolation=interpolation)
+    # cv2.imshow('resized', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
     im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+    # cv2.imshow('transposed', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
     im = np.ascontiguousarray(im)
     return torch.from_numpy(im)
 

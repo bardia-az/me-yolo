@@ -33,6 +33,9 @@ class Callbacks:
         'on_train_end': [],
 
         'teardown': [],
+
+        'on_fit_epoch_end_me': []
+
     }
 
     def register_action(self, hook, name='', callback=None):

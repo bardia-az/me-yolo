@@ -26,7 +26,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
 from models.supplemental import AutoEncoder
-from utils.datasets import create_dataloader
+from utils.datasets import create_me_dataloader
 from utils.general import (LOGGER, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
                            scale_coords, xywh2xyxy, xyxy2xywh, print_args_to_file)
@@ -34,6 +34,7 @@ from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import output_to_target, plot_images, plot_val_study
 from utils.torch_utils import select_device, time_sync
 from utils.callbacks import Callbacks
+from utils.loss import compute_loss_me
 
 
 def save_one_txt(predn, save_conf, shape, file):
@@ -83,7 +84,7 @@ def process_batch(detections, labels, iouv):
 
 
 @torch.no_grad()
-def run(data,
+def run(data_list,
         weights=None,  # model.pt path(s)
         batch_size=32,  # batch size
         imgsz=640,  # inference size (pixels)
@@ -116,6 +117,7 @@ def run(data,
         callbacks=Callbacks(),
         compute_loss=None,
         autoencoder=None,
+        motion_estimator=None
         ):
     # Initialize/load model and set device
     training = model is not None
@@ -142,257 +144,219 @@ def run(data,
         #     model = nn.DataParallel(model)
 
         # Data
-        data = check_dataset(data)  # check
+        # data = check_dataset(data)  # check
 
     # Half
     half &= device.type != 'cpu'  # half precision only supported on CUDA
     model.half() if half else model.float()
 
     # Loading Autoencoder
-    if supp_weights is not None:
-        autoenc_pretrained = supp_weights.endswith('.pt')
-        if autoenc_pretrained:
-            autoencoder = AutoEncoder(autoenc_chs).to(device)
-            supp_ckpt = torch.load(supp_weights, map_location=device)
-            autoencoder.load_state_dict(supp_ckpt['model'])
-            print('pretrained autoencoder')
-            del supp_ckpt
-            autoencoder.half() if half else autoencoder.float()
-            autoencoder.eval()
+    if not training:
+        assert supp_weights is not None, 'autoencoder weights should be available'
+        assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
+        autoencoder = AutoEncoder(autoenc_chs).to(device)
+        supp_ckpt = torch.load(supp_weights, map_location=device)
+        autoencoder.load_state_dict(supp_ckpt['model'])
+        print('pretrained autoencoder')
+        del supp_ckpt
+        autoencoder.half() if half else autoencoder.float()
+        autoencoder.eval()
 
     # Configure
     model.eval()
-    is_coco = isinstance(data.get('val'), str) and data['val'].endswith('coco/val2017.txt')  # COCO dataset
-    nc = 1 if single_cls else int(data['nc'])  # number of classes
-    iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
-    niou = iouv.numel()
+    # is_coco = isinstance(data.get('val'), str) and data['val'].endswith('coco/val2017.txt')  # COCO dataset
+    # nc = 1 if single_cls else int(data['nc'])  # number of classes
+    # iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
+    # niou = iouv.numel()
 
-    # Dataloader
-    if not training:
-        if device.type != 'cpu':
-            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-        pad = 0.0 if task == 'speed' else 0.5
-        task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
-        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, single_cls, pad=pad, rect=True,
-                                       prefix=colorstr(f'{task}: '))[0]
+    # # Dataloader
+    # if not training:
+    #     if device.type != 'cpu':
+    #         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+    #     pad = 0.0 if task == 'speed' else 0.5
+    #     task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
+    #     dataloader = create_me_dataloader(data_list, imgsz, batch_size, rank=-1)
 
-    seen = 0
-    confusion_matrix = ConfusionMatrix(nc=nc)
-    names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
-    class_map = coco80_to_coco91_class() if is_coco else list(range(1000))
-    s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
+    # seen = 0
+    # confusion_matrix = ConfusionMatrix(nc=nc)
+    # names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
+    # class_map = coco80_to_coco91_class() if is_coco else list(range(1000))
+    # s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
+    s = ('\n' + '%10s' * 2) % ('L1', 'L2')
     dt, p, r, f1, mp, mr, map50, map = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-    loss = torch.zeros(3, device=device)
-    jdict, stats, ap, ap_class = [], [], [], []
-    L1, L2, SATD = [], [], []
-    if arbitrary_dist is not None:
-        pdf = np.load(arbitrary_dist)
-    # print(np.argmax(pdf))
-    # print(sum(pdf))
-    for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+    # loss = torch.zeros(3, device=device)
+    # jdict, stats, ap, ap_class = [], [], [], []
+    # # print(np.argmax(pdf))
+    # # print(sum(pdf))
+    mloss = torch.zeros(2, device=device)  # mean losses
+    for batch_i, (ref1, ref2, target) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
-        img = img.to(device, non_blocking=True)
-        img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255  # 0 - 255 to 0.0 - 1.0
-        targets = targets.to(device)
-        nb, _, height, width = img.shape  # batch size, channels, height, width
+        ref1 = ref1.to(device, non_blocking=True)
+        ref1 = ref1.half() if half else ref1.float()  # uint8 to fp16/32
+        ref1 /= 255  # 0 - 255 to 0.0 - 1.0
+        ref2 = ref2.to(device, non_blocking=True)
+        ref2 = ref2.half() if half else ref2.float()  # uint8 to fp16/32
+        ref2 /= 255  # 0 - 255 to 0.0 - 1.0
+        target = target.to(device, non_blocking=True)
+        target = target.half() if half else target.float()  # uint8 to fp16/32
+        target /= 255  # 0 - 255 to 0.0 - 1.0
+
+        # targets = targets.to(device)
+        nb, _, height, width = ref1.shape  # batch size, channels, height, width
         t2 = time_sync()
         dt[0] += t2 - t1
 
         # Run model
-        cut_model = 0
-        T = None
+        T1 = model(ref1, cut_model=1)       # first half of the model
+        T2 = model(ref2, cut_model=1)       # first half of the model
+        Ttrg = model(target, cut_model=1)   # first half of the model
+        # print(T.size())
+        T1_tilde = autoencoder(T1, task='enc')
+        T2_tilde = autoencoder(T2, task='enc')
+        Ttrg_tilde = autoencoder(Ttrg, task='enc')
+        # print(T_hat.size())
+        # pred = model(None, cut_model=2, T=T_hat)  # second half of the model
+        # print(pred.size())
+        T_in = torch.cat((T1_tilde, T2_tilde), 1)
+        Ttrg_hat = motion_estimator(T_in)
+        loss, loss_items = compute_loss_me(Ttrg_hat, Ttrg_tilde, device=device)
+
+        mloss = (mloss * batch_i + loss_items) / (batch_i + 1)  # update mean losses
+        # T = None
+        # T = model(img, augment=augment, cut_model=1)  # first half of the model
+        # T_hat = autoencoder(T) 
+        # out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model  
         
-        if(autoencoder is not None):
-            T = model(img, augment=augment, cut_model=1)  # first half of the model
-            T_hat = autoencoder(T) 
-            out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model  
-        else:
-            # out = model(img, augment=augment, cut_model=cut_model, T=T)  # inference and training outputs
-            # torch.save(out, 'bullshit/T.t')
-            # print(out.size())
-            # smpl = torch.round(torch.clamp((out[0,60,:,:] * 255), 0, 255))
-            # smpl_cpu = smpl.detach().cpu().numpy().astype(np.uint8)
-            # cv2.imwrite('bullshit/test.png', smpl_cpu)
-            N=None
-            if(add_noise):
-                T = model(img, augment=augment, cut_model=1)  # inference and training outputs    
-                if(noise_type=='gaussian'):
-                    N = (gauss_var ** 0.5) * torch.randn_like(T)
-                elif(noise_type=='uniform'):
-                    N = (uniform_len) * torch.rand_like(T) - uniform_len/2
-                elif(noise_type=='uni_gaussian'):
-                    N = (gauss_var ** 0.5) * torch.randn_like(T) + (uniform_len) * torch.rand_like(T) - uniform_len/2
-                elif(noise_type=='arbitrary'):
-                    # print(pdf.shape)
-                    r_int = torch.from_numpy(np.random.choice(np.arange(-255,256), size=T.size(), p=pdf)).to(device)
-                    r_real = torch.rand_like(T) - 0.5
-                    r = r_int + r_real
-                    # N = r * (torch.max(T) - torch.min(T)) / 255
-                    N = r * 20 / 255
-                    # print(N.size())
-                    # print(torch.max(T), torch.min(T))
-                    # print(torch.mean(T))
-                    # print(torch.max(N), torch.min(N))
-                    # print(torch.mean(N))
-                else:
-                    print("The requested noise type is not supported")
-                
-                T = T + N
-
-                L1.append(torch.mean(torch.abs(N)))
-                L2.append(torch.mean(torch.square(N)))
-                # N = N.unfold(2, kernel_size, kernel_stride).unfold(3, kernel_size, kernel_stride)
-                # N = N.contiguous().view(N.size(0), -1, N.size(4), N.size(5))
-                # print(N.size())
-                N = dct.blockify(N,8)
-                # print(N.size())
-                dctCoeff = dct.block_dct(N)
-                # print(dctCoeff.size())
-                SATD.append(torch.mean(torch.abs(dct.block_dct(N))))
-
-                out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
-
-            else:
-                if(cut_model==1):
-                    T = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs 
-                    # torch.save(out, 'bullshit/T.t')   
-                elif(cut_model==0):
-                    out, train_out = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
-                elif(cut_model==2):
-                    # T = torch.load('bullshit/T.t').to(device)
-                    # print(T.size())
-                    out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
-
         dt[1] += time_sync() - t2
 
         # Compute loss
-        if compute_loss:
-            loss += compute_loss([x.float() for x in train_out], targets)[1]  # box, obj, cls
+        # if compute_loss:
+        #     loss += compute_loss_me([x.float() for x in train_out], targets)[1]  # box, obj, cls
 
         # Run NMS
-        targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
-        lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
+        # targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
+        # lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
         t3 = time_sync()
-        out = non_max_suppression(out, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
+        # out = non_max_suppression(out, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
         dt[2] += time_sync() - t3
 
         # Statistics per image
-        for si, pred in enumerate(out):
-            labels = targets[targets[:, 0] == si, 1:]
-            nl = len(labels)
-            tcls = labels[:, 0].tolist() if nl else []  # target class
-            path, shape = Path(paths[si]), shapes[si][0]
-            seen += 1
+        # for si, pred in enumerate(out):
+        #     labels = targets[targets[:, 0] == si, 1:]
+        #     nl = len(labels)
+        #     tcls = labels[:, 0].tolist() if nl else []  # target class
+        #     path, shape = Path(paths[si]), shapes[si][0]
+        #     seen += 1
 
-            if len(pred) == 0:
-                if nl:
-                    stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
-                continue
+        #     if len(pred) == 0:
+        #         if nl:
+        #             stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+        #         continue
 
-            # Predictions
-            if single_cls:
-                pred[:, 5] = 0
-            predn = pred.clone()
-            scale_coords(img[si].shape[1:], predn[:, :4], shape, shapes[si][1])  # native-space pred
+        #     # Predictions
+        #     if single_cls:
+        #         pred[:, 5] = 0
+        #     predn = pred.clone()
+        #     scale_coords(img[si].shape[1:], predn[:, :4], shape, shapes[si][1])  # native-space pred
 
-            # Evaluate
-            if nl:
-                tbox = xywh2xyxy(labels[:, 1:5])  # target boxes
-                scale_coords(img[si].shape[1:], tbox, shape, shapes[si][1])  # native-space labels
-                labelsn = torch.cat((labels[:, 0:1], tbox), 1)  # native-space labels
-                correct = process_batch(predn, labelsn, iouv)
-                if plots:
-                    confusion_matrix.process_batch(predn, labelsn)
-            else:
-                correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool)
-            stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))  # (correct, conf, pcls, tcls)
+        #     # Evaluate
+        #     if nl:
+        #         tbox = xywh2xyxy(labels[:, 1:5])  # target boxes
+        #         scale_coords(img[si].shape[1:], tbox, shape, shapes[si][1])  # native-space labels
+        #         labelsn = torch.cat((labels[:, 0:1], tbox), 1)  # native-space labels
+        #         correct = process_batch(predn, labelsn, iouv)
+        #         if plots:
+        #             confusion_matrix.process_batch(predn, labelsn)
+        #     else:
+        #         correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool)
+        #     stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))  # (correct, conf, pcls, tcls)
 
-            # Save/log
-            if save_txt:
-                save_one_txt(predn, save_conf, shape, file=save_dir / 'labels' / (path.stem + '.txt'))
-            if save_json:
-                save_one_json(predn, jdict, path, class_map)  # append to COCO-JSON dictionary
-            callbacks.run('on_val_image_end', pred, predn, path, names, img[si])
+        #     # Save/log
+        #     if save_txt:
+        #         save_one_txt(predn, save_conf, shape, file=save_dir / 'labels' / (path.stem + '.txt'))
+        #     if save_json:
+        #         save_one_json(predn, jdict, path, class_map)  # append to COCO-JSON dictionary
+        #     callbacks.run('on_val_image_end', pred, predn, path, names, img[si])
 
-        # Plot images
-        if plots and batch_i < 3:
-            f = save_dir / f'val_batch{batch_i}_labels.jpg'  # labels
-            Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
-            f = save_dir / f'val_batch{batch_i}_pred.jpg'  # predictions
-            Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
+        # # Plot images
+        # if plots and batch_i < 3:
+        #     f = save_dir / f'val_batch{batch_i}_labels.jpg'  # labels
+        #     Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
+        #     f = save_dir / f'val_batch{batch_i}_pred.jpg'  # predictions
+        #     Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
 
-    # Compute statistics
-    stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
-    if len(stats) and stats[0].any():
-        p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, save_dir=save_dir, names=names)
-        ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
-        mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
-        nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
-    else:
-        nt = torch.zeros(1)
+    # # # Compute statistics
+    # # stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
+    # # if len(stats) and stats[0].any():
+    # #     p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, save_dir=save_dir, names=names)
+    # #     ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
+    # #     mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
+    # #     nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
+    # # else:
+    # #     nt = torch.zeros(1)
 
-    # Print results
-    pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
-    LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
-    with open(save_dir / 'result.txt', 'a') as f:
-        form = ' \n\nClass = ' + '%s' + '\n' + 'Images = ' + '%i' + '\n' + 'Labels = ' + '%i' + '\n' + 'P =' + '%.3g' + '\n' + 'R =' + '%.3g' + '\n' + 'mAP@.5 =' + '%.3g' + '\n' + 'mAP@.5:.95 =' + '%.3g' + '\n\n'
-        f.write(form % ('all', seen, nt.sum(), mp, mr, map50*100, map*100))
-        if(add_noise):
-            f.write('Losses:\n')
-            f.write(' L1 =\t %.4f\n L2 =\t %.4f\n SATD =\t %.4f\n' % (sum(L1)/len(L1), sum(L2)/len(L2), sum(SATD)/len(SATD)))
+    # # # Print results
+    pf = '%10.4g' * 2  # print format
+    LOGGER.info(pf % (mloss[0], mloss[1]))
+    # # with open(save_dir / 'result.txt', 'a') as f:
+    # #     form = ' \n\nClass = ' + '%s' + '\n' + 'Images = ' + '%i' + '\n' + 'Labels = ' + '%i' + '\n' + 'P =' + '%.3g' + '\n' + 'R =' + '%.3g' + '\n' + 'mAP@.5 =' + '%.3g' + '\n' + 'mAP@.5:.95 =' + '%.3g' + '\n\n'
+    # #     f.write(form % ('all', seen, nt.sum(), mp, mr, map50*100, map*100))
+    # #     if(add_noise):
+    # #         f.write('Losses:\n')
+    # #         f.write(' L1 =\t %.4f\n L2 =\t %.4f\n SATD =\t %.4f\n' % (sum(L1)/len(L1), sum(L2)/len(L2), sum(SATD)/len(SATD)))
 
-    # Print results per class
-    if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
-        for i, c in enumerate(ap_class):
-            LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+    # # # Print results per class
+    # # if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
+    # #     for i, c in enumerate(ap_class):
+    # #         LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
 
-    # Print speeds
-    t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
-    if not training:
-        shape = (batch_size, 3, imgsz, imgsz)
-        LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
+    # # # Print speeds
+    # # t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
+    # # if not training:
+    # #     shape = (batch_size, 3, imgsz, imgsz)
+    # #     LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
 
-    # Plots
-    if plots:
-        confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
-        callbacks.run('on_val_end')
+    # # # Plots
+    # # if plots:
+    # #     confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
+    # #     callbacks.run('on_val_end')
 
-    # Save JSON
-    if save_json and len(jdict):
-        w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
-        anno_json = str(Path(data.get('path', '../coco')) / 'annotations/instances_val2017.json')  # annotations json
-        pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
-        LOGGER.info(f'\nEvaluating pycocotools mAP... saving {pred_json}...')
-        with open(pred_json, 'w') as f:
-            json.dump(jdict, f)
+    # # # Save JSON
+    # # if save_json and len(jdict):
+    # #     w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
+    # #     anno_json = str(Path(data.get('path', '../coco')) / 'annotations/instances_val2017.json')  # annotations json
+    # #     pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
+    # #     LOGGER.info(f'\nEvaluating pycocotools mAP... saving {pred_json}...')
+    # #     with open(pred_json, 'w') as f:
+    # #         json.dump(jdict, f)
 
-        try:  # https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocoEvalDemo.ipynb
-            check_requirements(['pycocotools'])
-            from pycocotools.coco import COCO
-            from pycocotools.cocoeval import COCOeval
+    # #     try:  # https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocoEvalDemo.ipynb
+    # #         check_requirements(['pycocotools'])
+    # #         from pycocotools.coco import COCO
+    # #         from pycocotools.cocoeval import COCOeval
 
-            anno = COCO(anno_json)  # init annotations api
-            pred = anno.loadRes(pred_json)  # init predictions api
-            eval = COCOeval(anno, pred, 'bbox')
-            if is_coco:
-                eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.img_files]  # image IDs to evaluate
-            eval.evaluate()
-            eval.accumulate()
-            eval.summarize()
-            map, map50 = eval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
-        except Exception as e:
-            LOGGER.info(f'pycocotools unable to run: {e}')
+    # #         anno = COCO(anno_json)  # init annotations api
+    # #         pred = anno.loadRes(pred_json)  # init predictions api
+    # #         eval = COCOeval(anno, pred, 'bbox')
+    # #         if is_coco:
+    # #             eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.img_files]  # image IDs to evaluate
+    # #         eval.evaluate()
+    # #         eval.accumulate()
+    # #         eval.summarize()
+    # #         map, map50 = eval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
+    # #     except Exception as e:
+    # #         LOGGER.info(f'pycocotools unable to run: {e}')
 
-    # Return results
-    model.float()  # for training
-    if not training:
-        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
-        LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
-    maps = np.zeros(nc) + map
-    for i, c in enumerate(ap_class):
-        maps[c] = ap[i]
-    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    # # # Return results
+    # # model.float()  # for training
+    # # if not training:
+    # #     s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
+    # #     LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
+    # # maps = np.zeros(nc) + map
+    # # for i, c in enumerate(ap_class):
+    # #     maps[c] = ap[i]
+    # return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    return mloss
 
 
 def parse_opt():
