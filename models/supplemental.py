@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 # ROOT = ROOT.relative_to(Path.cwd())  # relative
 
 from models.common import *
-from utils.plots import feature_visualization
+from utils.plots import feature_visualization, visualize_one_channel
 import torch.nn.functional as F
 import torch.nn.init as init
 import torchvision
@@ -54,13 +54,16 @@ class AutoEncoder(nn.Module):
         self.enc = Encoder(chs, k=3)
         self.dec = Decoder(chs, k=3)
 
-    def forward(self, x, visualize=False, task='enc_dec', bottleneck=None):
+    def forward(self, x, visualize=False, task='enc_dec', bottleneck=None, s=''):
         if task=='dec':
             x = bottleneck
         else:
             x = self.enc(x)
+
         if visualize:
-            feature_visualization(x, 'encoder', 'output', save_dir=visualize, cut_model='1.5')
+            visualize_one_channel(x, n=8, save_dir=visualize, s=s)
+            feature_visualization(x, 'encoder', '', save_dir=visualize, cut_model=s)
+            
         if task=='enc':
             return x
         else:

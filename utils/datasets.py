@@ -113,6 +113,7 @@ def load_image_me(path, flr=False, fud=False, imgsz=1024):
         im = np.ascontiguousarray(im)
         return torch.from_numpy(im)
     except Exception as e:
+        print('could not load the file')
         return torch.zeros((3,imgsz,imgsz))
 
 def create_me_dataloader(list_path, imgsz, batch_size, rank=-1, workers=8, shuffle=False):
@@ -303,6 +304,61 @@ class LoadImages:
         self.frame = 0
         self.cap = cv2.VideoCapture(path)
         self.frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    def __len__(self):
+        return self.nf  # number of files
+
+
+class LoadImages_me:
+    def __init__(self, list_path, img_size=1024, stride=32):
+        list_path = Path(list_path)
+        self.data_path = []
+        self.imgsz = img_size
+        self.stride = stride
+        with open(list_path) as f:
+            for line in f:
+                folder_path = line.strip()
+                if len(folder_path) != 0:
+                    self.data_path.append(list_path.parent / 'sequences' / folder_path)
+        self.nf = len(self.data_path)
+
+    def __iter__(self):
+        self.count = 0
+        return self
+
+    def __next__(self):
+        if self.count == self.nf:
+            raise StopIteration
+        path = self.data_path[self.count]
+
+        ref1_path = str(path / 'im1.png')
+        ref2_path = str(path / 'im2.png')
+        target_path = str(path / 'im3.png')
+
+        # Read image
+        self.count += 1
+        ref1_img0 = cv2.imread(ref1_path)  # BGR
+        assert ref1_img0 is not None, f'Image Not Found {ref1_path}'
+        ref2_img0 = cv2.imread(ref2_path)  # BGR
+        assert ref2_img0 is not None, f'Image Not Found {ref2_path}'
+        target_img0 = cv2.imread(target_path)  # BGR
+        assert target_img0 is not None, f'Image Not Found {target_path}'
+        s = f'image {self.count}/{self.nf} {path}: '
+
+        # Padded resize
+        ref1_img = letterbox(ref1_img0, self.imgsz, stride=self.stride, auto=False, scaleFill=True)[0]
+        ref2_img = letterbox(ref2_img0, self.imgsz, stride=self.stride, auto=False, scaleFill=True)[0]
+        target_img = letterbox(target_img0, self.imgsz, stride=self.stride, auto=False, scaleFill=True)[0]
+
+        # Convert
+        ref1_img = ref1_img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        ref2_img = ref2_img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        target_img = target_img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        ref1_img = np.ascontiguousarray(ref1_img)
+        ref2_img = np.ascontiguousarray(ref2_img)
+        target_img = np.ascontiguousarray(target_img)
+
+        return path, ref1_img, ref2_img, target_img, target_img0, s
 
     def __len__(self):
         return self.nf  # number of files

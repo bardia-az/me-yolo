@@ -457,3 +457,20 @@ def feature_visualization(x, module_type, stage, n=64, save_dir=Path('runs/detec
             print(f'Saving {save_dir / f}... ({n}/{channels})')
             plt.savefig(save_dir / f, dpi=300, bbox_inches='tight')
             plt.close()
+
+def visualize_one_channel(x, n=0, save_dir=Path('runs/detect/exp'), s=''):
+    """
+    x:              Features to be visualized
+    n:              channel index
+    save_dir:       Directory to save results
+    s:              the suffix string in the stored file
+    """
+    f = f"channel{n}_{s}.png"  # filename
+
+    img = plt.imshow(x[0,n,:,:].cpu(), cmap='gray')
+    # plt.colorbar(img)
+    plt.axis('off')
+
+    print(f'Saving {save_dir / f}')
+    plt.savefig(save_dir / f, dpi=75, bbox_inches='tight')
+    plt.close()
