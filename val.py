@@ -333,19 +333,26 @@ def run(data,
         nt = torch.zeros(1)
 
     # Print results
+    s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
     LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
     with open(save_dir / 'result.txt', 'a') as f:
-        form = ' \n\nClass = ' + '%s' + '\n' + 'Images = ' + '%i' + '\n' + 'Labels = ' + '%i' + '\n' + 'P =' + '%.3g' + '\n' + 'R =' + '%.3g' + '\n' + 'mAP@.5 =' + '%.3g' + '\n' + 'mAP@.5:.95 =' + '%.3g' + '\n\n'
-        f.write(form % ('all', seen, nt.sum(), mp, mr, map50*100, map*100))
-        if(add_noise):
-            f.write('Losses:\n')
-            f.write(' L1 =\t %.4f\n L2 =\t %.4f\n SATD =\t %.4f\n' % (sum(L1)/len(L1), sum(L2)/len(L2), sum(SATD)/len(SATD)))
-
+        f.write('\n\n' + s + '\n')
+        f.write(pf % ('all', seen, nt.sum(), mp, mr, map50*100, map*100) + '\n')
+        
     # Print results per class
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+            with open(save_dir / 'result.txt', 'a') as f:
+                f.write(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]) + '\n')
+
+    # Print noise results
+    if(add_noise):
+        with open(save_dir / 'result.txt', 'a') as f:
+            f.write('Losses:\n')
+            f.write(' L1 =\t %.4f\n L2 =\t %.4f\n SATD =\t %.4f\n' % (sum(L1)/len(L1), sum(L2)/len(L2), sum(SATD)/len(SATD)))
+
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
