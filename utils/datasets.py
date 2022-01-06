@@ -1040,7 +1040,9 @@ def verify_image_label(args):
             if nl:
                 assert l.shape[1] == 5, f'labels require 5 columns, {l.shape[1]} columns detected'
                 assert (l >= 0).all(), f'negative label values {l[l < 0]}'
-                assert (l[:, 1:] <= 1).all(), f'non-normalized or out of bounds coordinates {l[:, 1:][l[:, 1:] > 1]}'
+                # assert (l[:, 1:] <= 1).all(), f'non-normalized or out of bounds coordinates {l[:, 1:][l[:, 1:] > 1]}'
+                assert (l[:, 1:3] <= 1).all(), f'non-normalized or out of bounds coordinates {l[:, 1:3][l[:, 1:3] > 1]}'
+                l[:, 3:][l[:, 3:]>1] = 1
                 l = np.unique(l, axis=0)  # remove duplicate rows
                 if len(l) < nl:
                     segments = np.unique(segments, axis=0)
