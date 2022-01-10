@@ -27,7 +27,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 from models.experimental import attempt_load
 from models.supplemental import AutoEncoder
 from utils.datasets import create_dataloader
-from utils.general import (LOGGER, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
+from utils.general import (LOGGER, StatCalculator, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
                            scale_coords, xywh2xyxy, xyxy2xywh, print_args_to_file)
 from utils.metrics import ap_per_class, ConfusionMatrix
@@ -205,8 +205,9 @@ def run(data,
         
         if(autoencoder is not None):
             T = model(img, augment=augment, cut_model=1)  # first half of the model
-            T_hat = autoencoder(T) 
-            out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model  
+            T_bottleneck = autoencoder(T, task='enc')
+            T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
+            out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model
         else:
             # out = model(img, augment=augment, cut_model=cut_model, T=T)  # inference and training outputs
             # torch.save(out, 'bullshit/T.t')

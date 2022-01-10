@@ -25,9 +25,9 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder
+from models.supplemental import AutoEncoder, MotionEstimation
 from utils.datasets import create_me_dataloader
-from utils.general import (LOGGER, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
+from utils.general import (LOGGER, StatCalculator, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
                            scale_coords, xywh2xyxy, xyxy2xywh, print_args_to_file)
 from utils.metrics import ap_per_class, ConfusionMatrix
@@ -84,7 +84,8 @@ def process_batch(detections, labels, iouv):
 
 
 @torch.no_grad()
-def run(data_list,
+def run(data,
+        data_list,
         weights=None,  # model.pt path(s)
         batch_size=32,  # batch size
         imgsz=640,  # inference size (pixels)
@@ -110,6 +111,8 @@ def run(data_list,
         arbitrary_dist=None,
         autoenc_chs=None,
         supp_weights=None,  # model.pt path(s)
+        val_list=None,
+        weights_me=None,
         model=None,
         dataloader=None,
         save_dir=Path(''),
@@ -150,17 +153,27 @@ def run(data_list,
     half &= device.type != 'cpu'  # half precision only supported on CUDA
     model.half() if half else model.float()
 
-    # Loading Autoencoder
+    # Loading Autoencoder and Motion Estimator
     if not training:
         assert supp_weights is not None, 'autoencoder weights should be available'
         assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
         autoencoder = AutoEncoder(autoenc_chs).to(device)
         supp_ckpt = torch.load(supp_weights, map_location=device)
         autoencoder.load_state_dict(supp_ckpt['model'])
-        print('pretrained autoencoder')
+        print('autoencoder loaded successfully')
         del supp_ckpt
         autoencoder.half() if half else autoencoder.float()
         autoencoder.eval()
+
+        assert weights_me is not None, 'motion estimator weights should be available'
+        assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
+        motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+        me_ckpt = torch.load(weights_me, map_location=device)
+        motion_estimator.load_state_dict(me_ckpt['model'])
+        print('motion estimator loaded successfully')
+        del me_ckpt
+        motion_estimator.half() if half else autoencoder.float()
+        motion_estimator.eval()
 
     # Configure
     model.eval()
@@ -169,13 +182,13 @@ def run(data_list,
     # iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     # niou = iouv.numel()
 
-    # # Dataloader
-    # if not training:
-    #     if device.type != 'cpu':
-    #         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-    #     pad = 0.0 if task == 'speed' else 0.5
-    #     task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
-    #     dataloader = create_me_dataloader(data_list, imgsz, batch_size, rank=-1)
+    # Dataloader
+    if not training:
+        if device.type != 'cpu':
+            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        pad = 0.0 if task == 'speed' else 0.5
+        task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
+        dataloader = create_me_dataloader(data_list, imgsz, batch_size, rank=-1)
 
     # seen = 0
     # confusion_matrix = ConfusionMatrix(nc=nc)
@@ -188,6 +201,7 @@ def run(data_list,
     # jdict, stats, ap, ap_class = [], [], [], []
     # # print(np.argmax(pdf))
     # # print(sum(pdf))
+    stats_residual = StatCalculator()
     mloss = torch.zeros(2, device=device)  # mean losses
     for batch_i, (ref1, ref2, target) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
@@ -226,6 +240,9 @@ def run(data_list,
         # T = model(img, augment=augment, cut_model=1)  # first half of the model
         # T_hat = autoencoder(T) 
         # out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model  
+
+        residual = (Ttrg_tilde - Ttrg_hat).numpy()
+        stats_residual.update_stats(residual)
         
         dt[1] += time_sync() - t2
 
@@ -285,6 +302,8 @@ def run(data_list,
         #     f = save_dir / f'val_batch{batch_i}_pred.jpg'  # predictions
         #     Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
 
+    # # # Output the statistics of the residuals
+    stats_residual.output_stats(save_dir)
     # # # Compute statistics
     # # stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     # # if len(stats) and stats[0].any():
@@ -388,8 +407,10 @@ def parse_opt():
     parser.add_argument('--arbitrary-dist', default=None, help='the numpy file containing the distribution')
 
     # Supplemental arguments
-    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,192,64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
+    parser.add_argument('--data-list', type=str, default=None, help='txt file containing the validation list')
+    parser.add_argument('--weights-me', type=str, default=None, help='initial weights path for the autoencoder')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
