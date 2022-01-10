@@ -241,7 +241,7 @@ def run(data,
         # T_hat = autoencoder(T) 
         # out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model  
 
-        residual = (Ttrg_tilde - Ttrg_hat).numpy()
+        residual = (Ttrg_tilde - Ttrg_hat).cpu().numpy()
         stats_residual.update_stats(residual)
         
         dt[1] += time_sync() - t2
