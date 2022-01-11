@@ -204,7 +204,7 @@ def run(data,
     # jdict, stats, ap, ap_class = [], [], [], []
     # # print(np.argmax(pdf))
     # # print(sum(pdf))
-    stats_residual = StatCalculator(dist_range, bins)
+    stats_residual = StatCalculator(dist_range, bins) if track_stats else None
     mloss = torch.zeros(2, device=device)  # mean losses
     for batch_i, (ref1, ref2, target) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
@@ -244,8 +244,9 @@ def run(data,
         # T_hat = autoencoder(T) 
         # out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model  
 
-        residual = (Ttrg_tilde - Ttrg_hat).cpu().numpy()
-        stats_residual.update_stats(residual)
+        if track_stats:
+            residual = (Ttrg_tilde - Ttrg_hat).detach().cpu().numpy()
+            stats_residual.update_stats(residual)
         
         dt[1] += time_sync() - t2
 
@@ -306,7 +307,8 @@ def run(data,
         #     Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
 
     # # # Output the statistics of the residuals
-    stats_residual.output_stats(save_dir)
+    if track_stats:
+        stats_residual.output_stats(save_dir)
     # # # Compute statistics
     # # stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     # # if len(stats) and stats[0].any():

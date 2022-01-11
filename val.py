@@ -109,6 +109,9 @@ def run(data,
         arbitrary_dist=None,
         autoenc_chs=None,
         supp_weights=None,  # model.pt path(s)
+        track_stats=False,
+        dist_range=[-10,14],
+        bins=10000,
         model=None,
         dataloader=None,
         save_dir=Path(''),
@@ -189,6 +192,7 @@ def run(data,
         pdf = np.load(arbitrary_dist)
     # print(np.argmax(pdf))
     # print(sum(pdf))
+    stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
         img = img.to(device, non_blocking=True)
@@ -208,6 +212,8 @@ def run(data,
             T_bottleneck = autoencoder(T, task='enc')
             T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
             out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model
+            if track_stats:
+                stats_bottleneck.update_stats(T_bottleneck.detach().clone().cpu().numpy())
         else:
             # out = model(img, augment=augment, cut_model=cut_model, T=T)  # inference and training outputs
             # torch.save(out, 'bullshit/T.t')
@@ -340,6 +346,9 @@ def run(data,
     with open(save_dir / 'result.txt', 'a') as f:
         f.write('\n\n' + s + '\n')
         f.write(pf % ('all', seen, nt.sum(), mp, mr, map50*100, map*100) + '\n')
+    
+    if track_stats:
+        stats_bottleneck.output_stats(save_dir)
         
     # Print results per class
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
@@ -432,8 +441,11 @@ def parse_opt():
     parser.add_argument('--arbitrary-dist', default=None, help='the numpy file containing the distribution')
 
     # Supplemental arguments
-    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
+    parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
+    parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
+    parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
