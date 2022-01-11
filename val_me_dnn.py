@@ -113,6 +113,9 @@ def run(data,
         supp_weights=None,  # model.pt path(s)
         val_list=None,
         weights_me=None,
+        track_stats=False,
+        dist_range=[-10,14],
+        bins=10000,
         model=None,
         dataloader=None,
         save_dir=Path(''),
@@ -201,7 +204,7 @@ def run(data,
     # jdict, stats, ap, ap_class = [], [], [], []
     # # print(np.argmax(pdf))
     # # print(sum(pdf))
-    stats_residual = StatCalculator()
+    stats_residual = StatCalculator(dist_range, bins)
     mloss = torch.zeros(2, device=device)  # mean losses
     for batch_i, (ref1, ref2, target) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
@@ -411,6 +414,9 @@ def parse_opt():
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--data-list', type=str, default=None, help='txt file containing the validation list')
     parser.add_argument('--weights-me', type=str, default=None, help='initial weights path for the autoencoder')
+    parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
+    parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
+    parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML

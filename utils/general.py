@@ -855,16 +855,16 @@ def increment_path(path, exist_ok=False, sep='', mkdir=False):
 
 
 class StatCalculator:
-    def __init__(self):
+    def __init__(self, range, bins):
         self.n = 0
         self.std = 0
         self.mean = 0
         self.var = 0
-        self.bins = 512
+        self.bins = bins
         self.hist = np.zeros(self.bins)
         self.vmin = float('inf')
         self.vmax = float('-inf')
-        self.range = (-2,10)
+        self.range = range
 
     def update_stats(self, new_set):
         self.vmin = min(self.vmin, new_set.min())
@@ -898,8 +898,9 @@ class StatCalculator:
             f.write(pf % (self.vmin, self.vmax, self.mean, self.var, self.std, f'[{self.mean-self.std:.4f}, {self.mean+self.std:.4f}]', f'[{self.mean-3*self.std:.4f}, {self.mean+3*self.std:.4f}]') + '\n')
 
         self.hist /= self.n
-        plt.bar(self.bin_edges[:-1], self.hist, width=1)
-        plt.axvline(self.mean, 0, max(self.hist), c='r', ls='--', label='mean')
+        # plt.bar(self.bin_edges[:-1], self.hist)
+        plt.plot(self.bin_edges[:-1], self.hist, label='distribution')
+        plt.axvline(self.mean, 0, max(self.hist), c='r', ls='--', lw=0.75, label='mean')
         plt.axvline(self.mean-3*self.std, 0, max(self.hist), c='g', lw=0.5, label='3*sigma range')
         plt.axvline(self.mean+3*self.std, 0, max(self.hist), c='g', lw=0.5)
         plt.legend()
