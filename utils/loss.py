@@ -4,10 +4,134 @@ Loss functions
 """
 
 import torch
+from torch.cuda import device
 import torch.nn as nn
+import numpy as np
+import math
+from scipy.linalg import toeplitz
 
 from utils.metrics import bbox_iou
 from utils.torch_utils import is_parallel
+from torch.nn.functional import mse_loss, l1_loss
+
+
+
+class CompressibilityLoss:
+    def __init__(self, device, weight):
+        self.device = device
+        self.weight = weight
+
+    def __call__(self, features):
+        Z = self.entropy_friendly_loss_made_differentiable(features)
+        loss = torch.zeros(1, device=self.device)
+        loss[0] = self.weight * self.DCT_rate(Z)
+        return loss
+
+
+    def DCT_rate(self, feature):    
+        dct_feature = self.batch_DCT_2D(feature) 
+        energy_dct_feature = torch.mean(torch.abs(dct_feature))
+        return energy_dct_feature
+
+    def batch_DCT_2D(self, feature):
+        shape_of_feature = feature.shape
+        row = shape_of_feature[2] 
+        col = shape_of_feature[3]
+        feature_permute = feature.permute(0,1,3,2)
+
+        dctm_c = torch.Tensor(self.dctmat(col)).to(self.device)
+        dctm_r = torch.Tensor(self.dctmat(row)).to(self.device)
+        
+        mult1_v1 = torch.bmm(dctm_c.expand(shape_of_feature[0]*shape_of_feature[1],dctm_c.shape[0],dctm_c.shape[1]),
+                        feature_permute.contiguous().view(shape_of_feature[0]*shape_of_feature[1],shape_of_feature[3],shape_of_feature[2]))
+        mult1_v2 = mult1_v1.permute(0,2,1)
+        mult2 = torch.bmm(dctm_r.expand(shape_of_feature[0]*shape_of_feature[1],dctm_r.shape[0],dctm_r.shape[1]),
+                        mult1_v2)
+        return mult2
+
+    def dctmat(self, n):
+        x = np.arange(n)
+        y = np.arange(n)
+        cc, rr = np.meshgrid(x, y)
+        c = math.sqrt(2 / n) * np.cos(np.multiply(math.pi * (2*cc + 1), rr) / (2 * n))
+        c[0,:] = c[0,:] / math.sqrt(2)
+        return c
+
+    def DCT_tiled(self, feature):
+        tiled_image = self.change_to_filed(feature)
+        shape_tiled_image = tiled_image.shape
+        row = shape_tiled_image[1] 
+        col = shape_tiled_image[2]
+        tiled_image_permute = tiled_image.permute(0,2,1)
+
+        dctm_c = torch.Tensor(self.dctmat(col)).to(self.device)
+        dctm_r = torch.Tensor(self.dctmat(row)).to(self.device)
+        
+        mult1_v1 = torch.bmm(dctm_c.expand(shape_tiled_image[0],dctm_c.shape[0],dctm_c.shape[1]),tiled_image_permute)
+        mult1_v2 = mult1_v1.permute(0,2,1)
+        mult2 = torch.bmm(dctm_r.expand(shape_tiled_image[0],dctm_r.shape[0],dctm_r.shape[1]),mult1_v2)
+        return mult2
+
+    def change_to_filed(self, feature):
+        shape_feature = feature.shape
+        fch = shape_feature[1]
+        frow = shape_feature[2]
+        fcol = shape_feature[3]
+        num_ch_in_row = int(2** np.floor(1/2* (np.log2(fch))))
+        num_ch_in_col  = int(2** np.ceil (1/2* (np.log2(fch))))
+        feature_unfold_permuted = feature.unfold(1,num_ch_in_col,num_ch_in_col)
+        feature_unfold = feature_unfold_permuted.permute(0,1,2,4,3)
+        tiled_image = feature_unfold.contiguous().view(-1,num_ch_in_row*frow,num_ch_in_col*fcol)
+        return tiled_image
+
+    def entropy_friendly_loss_made_differentiable(self, feature):
+        bit_number = 8
+        shape_of_feature = feature.shape
+        column_toeplitz = np.zeros((1,shape_of_feature[3]))
+        column_toeplitz[0][0]=1
+        row_toeplitz = np.zeros((1,shape_of_feature[3]))
+        row_toeplitz[0][0]=1
+        row_toeplitz[0][1]=-1
+        toeplitz_matrix = toeplitz(column_toeplitz,row_toeplitz)
+
+        toeplitz_matrix = torch.from_numpy(toeplitz_matrix).to(self.device)
+        
+        toeplitz_matrix = toeplitz_matrix.float()
+
+        #transposed toeplitz
+        column_toeplitz_t = np.zeros((1,shape_of_feature[2]))
+        column_toeplitz_t[0][0]=1
+        row_toeplitz_t = np.zeros((1,shape_of_feature[2]))
+        row_toeplitz_t[0][0]=1
+        row_toeplitz_t[0][1]=-1
+        toeplitz_matrix_t = toeplitz(column_toeplitz_t,row_toeplitz_t)
+        
+        toeplitz_matrix_t = torch.from_numpy(toeplitz_matrix_t).to(self.device)
+
+        toeplitz_matrix_t = toeplitz_matrix_t.float()
+        
+        G_x_1 = torch.bmm(feature.view((shape_of_feature[0]*shape_of_feature[1],shape_of_feature[2],shape_of_feature[3])),
+                        toeplitz_matrix.unsqueeze(0).expand(feature.size(0)*feature.size(1), *toeplitz_matrix.size()))
+
+        G_x_2 = G_x_1.view((shape_of_feature[0],shape_of_feature[1],shape_of_feature[2],shape_of_feature[3]))
+        temp_feature = feature.permute(0,1,3,2)
+
+        G_y_1 = torch.bmm(temp_feature.contiguous().view((temp_feature.size(0) * temp_feature.size(1), temp_feature.size(2), temp_feature.size(3))),
+                        toeplitz_matrix_t.unsqueeze(0).expand(feature.size(0)*feature.size(1), *toeplitz_matrix_t.size()))
+
+        G_y_2 = G_y_1.view((feature.size(0), feature.size(1), feature.size(3), feature.size(2)))
+        G_y_3 = G_y_2.permute(0,1,3,2)
+
+        scale = torch.Tensor([0.5]).to(self.device)
+        G_t  = (G_x_2+G_y_3) * scale.expand_as(G_x_2+G_y_3)
+        return G_t
+
+
+def compute_loss_me(T1, T2, device):
+    loss_l1, loss_l2 = torch.zeros(1, device=device), torch.zeros(1, device=device)
+    loss_l1[0] = l1_loss(T1, T2)
+    loss_l2[0] = mse_loss(T1, T2)
+    return loss_l1, torch.cat((loss_l1, loss_l2)).detach()
 
 
 def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441

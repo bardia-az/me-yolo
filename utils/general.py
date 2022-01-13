@@ -27,6 +27,7 @@ import pkg_resources as pkg
 import torch
 import torchvision
 import yaml
+import matplotlib.pyplot as plt
 
 from utils.downloads import gsutil_getsize
 from utils.metrics import box_iou, fitness
@@ -851,3 +852,63 @@ def increment_path(path, exist_ok=False, sep='', mkdir=False):
     if mkdir:
         path.mkdir(parents=True, exist_ok=True)  # make directory
     return path
+
+
+class StatCalculator:
+    def __init__(self, range, bins):
+        self.n = 0
+        self.std = 0
+        self.mean = 0
+        self.var = 0
+        self.bins = bins
+        self.hist = np.zeros(self.bins)
+        self.vmin = float('inf')
+        self.vmax = float('-inf')
+        self.range = range
+
+    def update_stats(self, new_set):
+        self.vmin = min(self.vmin, new_set.min())
+        self.vmax = max(self.vmax, new_set.max())
+        tmp_histogram, self.bin_edges = np.histogram(new_set, bins=self.bins, range=self.range, density=True)
+        self.hist += tmp_histogram
+
+        mean2 = np.mean(new_set)
+        var2 = np.var(new_set)
+        # n2 = new_set.size
+        n2 = 1
+        mean1 = self.mean
+        var1 = self.var
+        n1 = self.n
+        
+        mean = ((n1 * mean1) + (n2 * mean2)) / (n1 + n2)
+        var = (n1 * (var1 + (mean1 - mean)**2) + n2 * (var2 + (mean2 - mean)**2)) / (n1 + n2)
+        std = math.sqrt(var)
+
+        self.mean = mean
+        self.var = var
+        self.std = std
+        # self.n += n2
+        self.n += 1
+
+    def output_stats(self, save_dir):
+        s = ('%11s'*5 + '%20s' * 2) % ('vmin', 'vmax', 'mean', 'var', 'std', 'std range', '3std range')
+        pf = '%11.4f' * 5 + '%20s' * 2  # print format
+        with open(save_dir / 'result.txt', 'a') as f:
+            f.write('\n\n' + s + '\n')
+            f.write(pf % (self.vmin, self.vmax, self.mean, self.var, self.std, f'[{self.mean-self.std:.4f}, {self.mean+self.std:.4f}]', f'[{self.mean-3*self.std:.4f}, {self.mean+3*self.std:.4f}]') + '\n')
+
+        self.hist /= self.n
+        # plt.bar(self.bin_edges[:-1], self.hist)
+        plt.plot(self.bin_edges[:-1], self.hist, label='distribution')
+        plt.axvline(self.mean, 0, max(self.hist), c='r', ls='--', lw=0.75, label='mean')
+        plt.axvline(self.mean-3*self.std, 0, max(self.hist), c='g', lw=0.5, label='3*sigma range')
+        plt.axvline(self.mean+3*self.std, 0, max(self.hist), c='g', lw=0.5)
+        plt.ylim(bottom=0)
+        plt.legend()
+        plt.savefig(save_dir / 'histogram.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+
+
+
+

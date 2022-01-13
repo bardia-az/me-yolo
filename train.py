@@ -45,7 +45,7 @@ from utils.general import (LOGGER, check_dataset, check_file, check_git_status, 
                            intersect_dicts, labels_to_class_weights, labels_to_image_weights, methods, one_cycle,
                            print_args, print_mutation, strip_optimizer, print_args_to_file)
 from utils.downloads import attempt_download
-from utils.loss import ComputeLoss
+from utils.loss import ComputeLoss, CompressibilityLoss
 from utils.plots import plot_labels, plot_evolve
 from utils.torch_utils import EarlyStopping, ModelEMA, de_parallel, select_device, torch_distributed_zero_first
 from utils.loggers.wandb.wandb_utils import check_wandb_resume
@@ -152,8 +152,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     elif(train_yolo=='backend'):
         freeze = 5
     elif(train_yolo=='nothing'):
-        # freeze = 34 if (pretrained and weights[-4]=='6') else 25  
-        freeze = 34     #FIXME for now we supposed that all the models are the big one
+        freeze = 34 if (pretrained and opt.weights[-4]=='6') else 25
     else:
         raise Exception(f'train-yolo={train_yolo} is not supported')
     # Freeze
@@ -318,6 +317,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     scaler = amp.GradScaler(enabled=cuda)
     stopper = EarlyStopping(patience=opt.patience)
     compute_loss = ComputeLoss(model)  # init loss class
+    compressibility_loss = CompressibilityLoss(device, opt.w_compress)
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers} dataloader workers\n'
                 f"Logging results to {colorstr('bold', save_dir)}\n"
@@ -341,11 +341,11 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
-        mloss = torch.zeros(3, device=device)  # mean losses
+        mloss = torch.zeros(4, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
-        LOGGER.info(('\n' + '%10s' * 7) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'labels', 'img_size'))
+        LOGGER.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'cmprss', 'labels', 'img_size'))
         if RANK in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
@@ -375,16 +375,16 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             # Forward
             with amp.autocast(enabled=cuda):
                 # pred = model(imgs)  # forward
-
                 T = model(imgs, cut_model=1)  # first half of the model
-                # print(T.size())
-                T_hat = autoencoder(T)
-                # print(T_hat.size())
-                # _, pred = model(None, cut_model=2, T=T_hat)  # second half of the model
+                # T_hat = autoencoder(T)
+                T_bottleneck = autoencoder(T, task='enc')
+                T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
                 pred = model(None, cut_model=2, T=T_hat)  # second half of the model
-                # print(pred.size())
 
-                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                loss_r = compressibility_loss(T_bottleneck)
+                loss_items = torch.cat((loss_items,loss_r.detach()))
+                loss = loss_o + loss_r
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -406,7 +406,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if RANK in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%10s' * 2 + '%10.4g' * 5) % (
+                pbar.set_description(('%10s' * 2 + '%10.4g' * 6) % (
                     f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
                 callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
             # end batch ------------------------------------------------------------------------------------------------
@@ -431,6 +431,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                            plots=False,
                                            callbacks=callbacks,
                                            compute_loss=compute_loss,
+                                           compressibility_loss = compressibility_loss,
                                            autoencoder=deepcopy(autoencoder).half())
 
             # Update best mAP
@@ -507,6 +508,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                             plots=True,
                                             callbacks=callbacks,
                                             compute_loss=compute_loss,      # val best model with plots
+                                            compressibility_loss = compressibility_loss,
                                             autoencoder=best_autoencoder.half())
                     if is_coco:
                         callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
@@ -570,6 +572,8 @@ def parse_opt(known=False):
     parser.add_argument('--lrf', type=float, default=0.2, help='final OneCycleLR learning rate (lr0 * lrf)')
     parser.add_argument('--warmup-bias-lr', type=float, default=0.1, help='warmup initial bias lr')
     parser.add_argument('--weight-decay', type=float, default=0.0005, help='optimizer weight decay 5e-4')
+    parser.add_argument('--w-compress', type=float, default=0, help='The weight of the compressibility loss')
+    
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
     return opt
