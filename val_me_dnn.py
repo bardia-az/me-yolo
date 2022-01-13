@@ -104,14 +104,8 @@ def run(data,
         name='exp',  # save to project/name
         exist_ok=False,  # existing project/name ok, do not increment
         half=True,  # use FP16 half-precision inference
-        add_noise=False,
-        noise_type='uniform',
-        gauss_var=1,
-        uniform_len=1,
-        arbitrary_dist=None,
         autoenc_chs=None,
         supp_weights=None,  # model.pt path(s)
-        val_list=None,
         weights_me=None,
         track_stats=False,
         dist_range=[-10,14],
@@ -404,12 +398,6 @@ def parse_opt():
     parser.add_argument('--name', default='exp', help='save to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
-
-    parser.add_argument('--add-noise', action='store_true', help='adding noise to the cutting point')
-    parser.add_argument('--noise-type', default='uniform', choices=['uniform', 'gaussian', 'uni_gaussian', 'arbitrary'], help='type of the added noise')
-    parser.add_argument('--gauss-var', type=float, default=1, help='variance of the gaussian noise')
-    parser.add_argument('--uniform-len', type=float, default=1, help='the length of the uniform distribution')
-    parser.add_argument('--arbitrary-dist', default=None, help='the numpy file containing the distribution')
 
     # Supplemental arguments
     parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,192,64], help='number of channels in autoencoder')

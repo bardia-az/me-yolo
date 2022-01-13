@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder
+from models.supplemental import AutoEncoder, MotionEstimation
 from utils.datasets import create_dataloader
 from utils.general import (LOGGER, StatCalculator, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
@@ -85,7 +85,7 @@ def process_batch(detections, labels, iouv):
 @torch.no_grad()
 def run(data,
         weights=None,  # model.pt path(s)
-        batch_size=32,  # batch size
+        batch_size=1,  # batch size
         imgsz=640,  # inference size (pixels)
         conf_thres=0.001,  # confidence threshold
         iou_thres=0.6,  # NMS IoU threshold
@@ -102,23 +102,20 @@ def run(data,
         name='exp',  # save to project/name
         exist_ok=False,  # existing project/name ok, do not increment
         half=True,  # use FP16 half-precision inference
-        add_noise=False,
-        noise_type='uniform',
-        gauss_var=1,
-        uniform_len=1,
-        arbitrary_dist=None,
         autoenc_chs=None,
         supp_weights=None,  # model.pt path(s)
+        weights_me=None,
         track_stats=False,
         dist_range=[-10,14],
         bins=10000,
+        frame_rate=50,
+        qp=24,
         model=None,
         dataloader=None,
         save_dir=Path(''),
         plots=True,
         callbacks=Callbacks(),
         compute_loss=None,
-        compressibility_loss=None,
         autoencoder=None,
         ):
     # Initialize/load model and set device
@@ -146,23 +143,34 @@ def run(data,
         #     model = nn.DataParallel(model)
 
         # Data
+        video_name = data.split('.')[0]
         data = check_dataset(data)  # check
 
     # Half
     half &= device.type != 'cpu'  # half precision only supported on CUDA
     model.half() if half else model.float()
 
-    # Loading Autoencoder
-    if supp_weights is not None:
-        autoenc_pretrained = supp_weights.endswith('.pt')
-        if autoenc_pretrained:
-            autoencoder = AutoEncoder(autoenc_chs).to(device)
-            supp_ckpt = torch.load(supp_weights, map_location=device)
-            autoencoder.load_state_dict(supp_ckpt['model'])
-            print('pretrained autoencoder')
-            del supp_ckpt
-            autoencoder.half() if half else autoencoder.float()
-            autoencoder.eval()
+    # Loading Autoencoder and Motion Estimator
+    if not training:
+        assert supp_weights is not None, 'autoencoder weights should be available'
+        assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
+        autoencoder = AutoEncoder(autoenc_chs).to(device)
+        supp_ckpt = torch.load(supp_weights, map_location=device)
+        autoencoder.load_state_dict(supp_ckpt['model'])
+        print('autoencoder loaded successfully')
+        del supp_ckpt
+        autoencoder.half() if half else autoencoder.float()
+        autoencoder.eval()
+
+        assert weights_me is not None, 'motion estimator weights should be available'
+        assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
+        motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+        me_ckpt = torch.load(weights_me, map_location=device)
+        motion_estimator.load_state_dict(me_ckpt['model'])
+        print('motion estimator loaded successfully')
+        del me_ckpt
+        motion_estimator.half() if half else autoencoder.float()
+        motion_estimator.eval()
 
     # Configure
     model.eval()
@@ -187,14 +195,21 @@ def run(data,
     s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     dt, p, r, f1, mp, mr, map50, map = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     loss = torch.zeros(3, device=device)
-    loss_r = torch.zeros(1, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
-    L1, L2, SATD = [], [], []
-    if arbitrary_dist is not None:
-        pdf = np.load(arbitrary_dist)
-    # print(np.argmax(pdf))
-    # print(sum(pdf))
-    stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
+
+    # stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
+
+    src_width = src_height = 1024
+
+    VVC_command = ['working_dir/vvencFFapp', '-c', 'working_dir/lowdelay_faster.cfg', '-i', 'working_dir/to_be_coded_frame.yuv', '-b', 'working_dir/bitstream.bin', 
+                   '-o', 'working_dir/reconst.yuv', '--SourceWidth', str(src_width), '--SourceHeight', str(src_height), '-f', '1', '-fr', str(frame_rate), '-q', str(qp)]
+
+    video = f'{video_name}_QP{qp}'
+    
+    to_be_coded_frame_full_name = 'working_dir/to_be_coded_frame_full_' + video + '.yuv'
+    predicted_frame_full_name = 'working_dir/predicted_frame_full_' + video + '.yuv'
+    output_video = 'working_dir/reconst_' + video + '.yuv'
+
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
         img = img.to(device, non_blocking=True)
@@ -214,56 +229,9 @@ def run(data,
             T_bottleneck = autoencoder(T, task='enc')
             T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
             out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model
-            if track_stats:
-                stats_bottleneck.update_stats(T_bottleneck.detach().clone().cpu().numpy())
-            if compressibility_loss:
-                loss_r += compressibility_loss(T_bottleneck.float())
-        else:
-            # out = model(img, augment=augment, cut_model=cut_model, T=T)  # inference and training outputs
-            # torch.save(out, 'bullshit/T.t')
-            # print(out.size())
-            # smpl = torch.round(torch.clamp((out[0,60,:,:] * 255), 0, 255))
-            # smpl_cpu = smpl.detach().cpu().numpy().astype(np.uint8)
-            # cv2.imwrite('bullshit/test.png', smpl_cpu)
-            N=None
-            if(add_noise):
-                T = model(img, augment=augment, cut_model=1)  # inference and training outputs    
-                if(noise_type=='gaussian'):
-                    N = (gauss_var ** 0.5) * torch.randn_like(T)
-                elif(noise_type=='uniform'):
-                    N = (uniform_len) * torch.rand_like(T) - uniform_len/2
-                elif(noise_type=='uni_gaussian'):
-                    N = (gauss_var ** 0.5) * torch.randn_like(T) + (uniform_len) * torch.rand_like(T) - uniform_len/2
-                elif(noise_type=='arbitrary'):
-                    r_int = torch.from_numpy(np.random.choice(np.arange(-255,256), size=T.size(), p=pdf)).to(device)
-                    r_real = torch.rand_like(T) - 0.5
-                    r = r_int + r_real
-                    N = r * 20 / 255
-                else:
-                    print("The requested noise type is not supported")
-                
-                T = T + N
+            # if track_stats:
+            #     stats_bottleneck.update_stats(T_bottleneck.detach().clone().cpu().numpy())
 
-                L1.append(torch.mean(torch.abs(N)))
-                L2.append(torch.mean(torch.square(N)))
-                # N = N.unfold(2, kernel_size, kernel_stride).unfold(3, kernel_size, kernel_stride)
-                # N = N.contiguous().view(N.size(0), -1, N.size(4), N.size(5))
-                # print(N.size())
-                N = dct.blockify(N,8)
-                # print(N.size())
-                dctCoeff = dct.block_dct(N)
-                # print(dctCoeff.size())
-                SATD.append(torch.mean(torch.abs(dct.block_dct(N))))
-
-                out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
-
-            else:
-                if(cut_model==1):
-                    T = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
-                elif(cut_model==0):
-                    out, train_out = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
-                elif(cut_model==2):
-                    out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
 
         dt[1] += time_sync() - t2
 
@@ -351,13 +319,6 @@ def run(data,
             with open(save_dir / 'result.txt', 'a') as f:
                 f.write(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]) + '\n')
 
-    # Print noise results
-    if(add_noise):
-        with open(save_dir / 'result.txt', 'a') as f:
-            f.write('Losses:\n')
-            f.write(' L1 =\t %.4f\n L2 =\t %.4f\n SATD =\t %.4f\n' % (sum(L1)/len(L1), sum(L2)/len(L2), sum(SATD)/len(SATD)))
-
-
     # Print speeds
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     if not training:
@@ -403,15 +364,14 @@ def run(data,
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    loss_tot = torch.cat((loss, loss_r))
-    return (mp, mr, map50, map, *(loss_tot.cpu() / len(dataloader)).tolist()), maps, t
+    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
 
 
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
     parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov5s.pt', help='model.pt path(s)')
-    parser.add_argument('--batch-size', type=int, default=32, help='batch size')
+    parser.add_argument('--batch-size', type=int, default=1, help='batch size')
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.6, help='NMS IoU threshold')
@@ -438,9 +398,12 @@ def parse_opt():
     # Supplemental arguments
     parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
+    parser.add_argument('--weights-me', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
     parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
     parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
+    parser.add_argument('--frame-rate', type=int, default=50, help='frame-rate for the vvc encoder')
+    parser.add_argument('--qp', type=int, default=24, help='QP for the vvc encoder')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML

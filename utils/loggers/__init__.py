@@ -40,9 +40,9 @@ class Loggers():
         self.hyp = hyp
         self.logger = logger  # for printing results to console
         self.include = include
-        self.keys = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
+        self.keys = ['train/box_loss', 'train/obj_loss', 'train/cls_loss', 'train/cmprss_loss',  # train loss
                      'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',  # metrics
-                     'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
+                     'val/box_loss', 'val/obj_loss', 'val/cls_loss', 'val/cmprss_loss',  # val loss
                      'x/lr0', 'x/lr1', 'x/lr2']  # params
         self.keys_me = ['train/L1', 'train/L2',  # train loss
                         'val/L1', 'val/L2',  # val loss
