@@ -226,6 +226,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         # Optimizer
         if ckpt['optimizer'] is not None:
             optimizer.load_state_dict(ckpt['optimizer'])
+        if resume:
             best_fitness = ckpt['best_fitness']
 
         # EMA
