@@ -383,8 +383,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 pred = model(None, cut_model=2, T=T_hat)  # second half of the model
 
                 loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                loss_r = compressibility_loss(T_bottleneck)
-                loss_items = torch.cat((loss_items,loss_r.detach()))
+                loss_r, loss_items_r = compressibility_loss(T_bottleneck)
+                loss_items = torch.cat((loss_items, loss_items_r.detach()))
                 loss = loss_o + loss_r
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode

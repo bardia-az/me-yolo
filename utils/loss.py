@@ -23,9 +23,10 @@ class CompressibilityLoss:
 
     def __call__(self, features):
         Z = self.entropy_friendly_loss_made_differentiable(features)
-        loss = torch.zeros(1, device=self.device)
-        loss[0] = self.weight * self.DCT_rate(Z)
-        return loss
+        loss_items = torch.zeros(1, device=self.device)
+        loss_items[0] = self.DCT_rate(Z)
+        loss = self.weight * loss_items
+        return loss, loss_items
 
 
     def DCT_rate(self, feature):    
@@ -127,11 +128,18 @@ class CompressibilityLoss:
         return G_t
 
 
-def compute_loss_me(T1, T2, device):
-    loss_l1, loss_l2 = torch.zeros(1, device=device), torch.zeros(1, device=device)
-    loss_l1[0] = l1_loss(T1, T2)
-    loss_l2[0] = mse_loss(T1, T2)
-    return loss_l1, torch.cat((loss_l1, loss_l2)).detach()
+class ComputeLossME:
+    def __init__(self, device, MAX):
+        self.device = device
+        self.MAX = MAX
+    def __call__(self, T1, T2):
+        loss_l1, loss_l2, psnr = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
+        loss_l1[0] = l1_loss(T1, T2)
+        mse = mse_loss(T1, T2, reduction='none').mean((2,3))
+        loss_l2[0] = torch.mean(mse)
+        psnr_per_feature = 10 * torch.log10(self.MAX**2 / mse)
+        psnr[0] = torch.mean(psnr_per_feature)
+        return loss_l1, torch.cat((loss_l1, loss_l2, psnr)).detach()
 
 
 def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441
