@@ -95,7 +95,6 @@ def load_image_me(path, flr=False, fud=False, imgsz=1024):
     path_name = str(path)
     try:
         im = cv2.imread(path_name)
-        # cv2.imshow('original', im); cv2.waitKey(0); cv2.destroyAllWindows(); cv2.waitKey(1)
         assert im is not None, f'Image Not Found {path}'
         if flr and fud:
             im = cv2.flip(im, -1)
@@ -116,10 +115,10 @@ def load_image_me(path, flr=False, fud=False, imgsz=1024):
         print('could not load the file')
         return torch.zeros((3,imgsz,imgsz))
 
-def create_me_dataloader(list_path, imgsz, batch_size, rank=-1, workers=8, shuffle=False):
+def create_me_dataloader(list_path, imgsz, batch_size, rank=-1, workers=8, shuffle=False, augment=False):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
-        dataset = LoadImagesForME(list_path, imgsz)
+        dataset = LoadImagesForME(list_path, imgsz, augment)
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, workers])  # number of workers
     sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
@@ -130,10 +129,11 @@ def create_me_dataloader(list_path, imgsz, batch_size, rank=-1, workers=8, shuff
 
 
 class LoadImagesForME(Dataset):
-    def __init__(self, list_path, imgsz):
+    def __init__(self, list_path, imgsz, augment):
         list_path = Path(list_path)
         self.data_path = []
         self.imgsz = imgsz
+        self.augment = augment
         with open(list_path) as f:
             for line in f:
                 folder_path = line.strip()
@@ -145,9 +145,11 @@ class LoadImagesForME(Dataset):
 
     def __getitem__(self, index):
         imgs_path = self.data_path[index]
-        flr = bool(np.random.randint(2))
-        fud = bool(np.random.randint(2))
-        sequenceOrderChange = bool(np.random.randint(2))
+        flr, fud, sequenceOrderChange = False, False, False
+        if self.augment:
+            flr = bool(np.random.randint(2))
+            fud = bool(np.random.randint(2))
+            sequenceOrderChange = bool(np.random.randint(2))
         ref2_path = imgs_path / 'im2.png'
         if sequenceOrderChange:
             ref1_path = imgs_path / 'im3.png'

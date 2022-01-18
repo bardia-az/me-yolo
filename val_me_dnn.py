@@ -34,7 +34,7 @@ from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import output_to_target, plot_images, plot_val_study
 from utils.torch_utils import select_device, time_sync
 from utils.callbacks import Callbacks
-from utils.loss import compute_loss_me
+from utils.loss import ComputeLossME
 
 
 def save_one_txt(predn, save_conf, shape, file):
@@ -110,12 +110,13 @@ def run(data,
         track_stats=False,
         dist_range=[-10,14],
         bins=10000,
+        feature_max=20,
         model=None,
         dataloader=None,
         save_dir=Path(''),
         plots=True,
         callbacks=Callbacks(),
-        compute_loss=None,
+        compute_loss_me=None,
         autoencoder=None,
         motion_estimator=None
         ):
@@ -185,21 +186,21 @@ def run(data,
             model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         pad = 0.0 if task == 'speed' else 0.5
         task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
-        dataloader = create_me_dataloader(data_list, imgsz, batch_size, rank=-1)
+        dataloader = create_me_dataloader(data_list, imgsz, batch_size, rank=-1, augment=False)
 
     # seen = 0
     # confusion_matrix = ConfusionMatrix(nc=nc)
     # names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
     # class_map = coco80_to_coco91_class() if is_coco else list(range(1000))
     # s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
-    s = ('\n' + '%10s' * 2) % ('L1', 'L2')
+    s = ('\n' + '%10s' * 3) % ('L1', 'L2', 'psnr')
     dt, p, r, f1, mp, mr, map50, map = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-    # loss = torch.zeros(3, device=device)
     # jdict, stats, ap, ap_class = [], [], [], []
-    # # print(np.argmax(pdf))
-    # # print(sum(pdf))
+    if not compute_loss_me:
+        compute_loss_me = ComputeLossME(device, feature_max)
     stats_residual = StatCalculator(dist_range, bins) if track_stats else None
-    mloss = torch.zeros(2, device=device)  # mean losses
+    mloss = torch.zeros(3, device=device)  # mean losses
+    
     for batch_i, (ref1, ref2, target) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
         ref1 = ref1.to(device, non_blocking=True)
@@ -212,7 +213,6 @@ def run(data,
         target = target.half() if half else target.float()  # uint8 to fp16/32
         target /= 255  # 0 - 255 to 0.0 - 1.0
 
-        # targets = targets.to(device)
         nb, _, height, width = ref1.shape  # batch size, channels, height, width
         t2 = time_sync()
         dt[0] += t2 - t1
@@ -221,22 +221,15 @@ def run(data,
         T1 = model(ref1, cut_model=1)       # first half of the model
         T2 = model(ref2, cut_model=1)       # first half of the model
         Ttrg = model(target, cut_model=1)   # first half of the model
-        # print(T.size())
         T1_tilde = autoencoder(T1, task='enc')
         T2_tilde = autoencoder(T2, task='enc')
         Ttrg_tilde = autoencoder(Ttrg, task='enc')
-        # print(T_hat.size())
         # pred = model(None, cut_model=2, T=T_hat)  # second half of the model
-        # print(pred.size())
         T_in = torch.cat((T1_tilde, T2_tilde), 1)
         Ttrg_hat = motion_estimator(T_in)
-        loss, loss_items = compute_loss_me(Ttrg_hat, Ttrg_tilde, device=device)
+        loss, loss_items = compute_loss_me(Ttrg_hat, Ttrg_tilde)
 
         mloss = (mloss * batch_i + loss_items) / (batch_i + 1)  # update mean losses
-        # T = None
-        # T = model(img, augment=augment, cut_model=1)  # first half of the model
-        # T_hat = autoencoder(T) 
-        # out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model  
 
         if track_stats:
             residual = (Ttrg_tilde - Ttrg_hat).detach().cpu().numpy()
@@ -246,7 +239,7 @@ def run(data,
 
         # Compute loss
         # if compute_loss:
-        #     loss += compute_loss_me([x.float() for x in train_out], targets)[1]  # box, obj, cls
+        #     loss += compute_loss([x.float() for x in train_out], targets)[1]  # box, obj, cls
 
         # Run NMS
         # targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
@@ -314,8 +307,8 @@ def run(data,
     # #     nt = torch.zeros(1)
 
     # # # Print results
-    pf = '%10.4g' * 2  # print format
-    LOGGER.info(pf % (mloss[0], mloss[1]))
+    pf = '%10.4g' * 3  # print format
+    LOGGER.info(pf % (mloss[0], mloss[1], mloss[2]))
     # # with open(save_dir / 'result.txt', 'a') as f:
     # #     form = ' \n\nClass = ' + '%s' + '\n' + 'Images = ' + '%i' + '\n' + 'Labels = ' + '%i' + '\n' + 'P =' + '%.3g' + '\n' + 'R =' + '%.3g' + '\n' + 'mAP@.5 =' + '%.3g' + '\n' + 'mAP@.5:.95 =' + '%.3g' + '\n\n'
     # #     f.write(form % ('all', seen, nt.sum(), mp, mr, map50*100, map*100))
@@ -407,6 +400,7 @@ def parse_opt():
     parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
     parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
     parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
+    parser.add_argument('--feature-max', type=float, default=20, help='The maximum range of the bottleneck features (for PSNR calculations)')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML

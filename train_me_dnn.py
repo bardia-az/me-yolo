@@ -45,7 +45,7 @@ from utils.general import (LOGGER, check_dataset, check_file, check_git_status, 
                            intersect_dicts, labels_to_class_weights, labels_to_image_weights, methods, one_cycle,
                            print_args, print_mutation, strip_optimizer, print_args_to_file)
 from utils.downloads import attempt_download
-from utils.loss import ComputeLoss, compute_loss_me
+from utils.loss import ComputeLoss, ComputeLossME
 from utils.plots import plot_labels, plot_evolve
 from utils.torch_utils import EarlyStopping, ModelEMA, de_parallel, select_device, torch_distributed_zero_first
 from utils.loggers.wandb.wandb_utils import check_wandb_resume
@@ -192,25 +192,17 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         lf = one_cycle(1, hyp['lrf'], epochs)  # cosine 1->hyp['lrf']
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)  # plot_lr_scheduler(optimizer, scheduler, epochs)
 
-    # # EMA
-    # ema = ModelEMA(model) if RANK in [-1, 0] else None
-
     # Resume
     start_epoch = 0
-    best_fitness = math.inf
+    best_fitness = 0.0
     if me_pretrained:
         # Optimizer
         if me_ckpt['optimizer'] is not None:
             optimizer.load_state_dict(me_ckpt['optimizer'])
-            # best_fitness = ckpt['best_fitness']
-
-        # EMA
-        # if ema and ckpt.get('ema'):
-        #     ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
-        #     ema.updates = ckpt['updates']
+        if resume:
+            best_fitness = ckpt['best_fitness']
 
         # Epochs
-        # start_epoch = ckpt['epoch'] + 1
         if resume:
             start_epoch = me_ckpt['epoch'] + 1
             assert start_epoch > 0, f'{weights} training to {epochs} epochs is finished, nothing to resume.'
@@ -232,7 +224,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         LOGGER.info('Using SyncBatchNorm()')
 
     # Trainloader
-    train_loader = create_me_dataloader(opt.train_list, imgsz, batch_size // WORLD_SIZE, rank=LOCAL_RANK, workers=workers)
+    train_loader = create_me_dataloader(opt.train_list, imgsz, batch_size // WORLD_SIZE, rank=LOCAL_RANK, workers=workers, augment=True)
                                         # prefix=colorstr('train: '))
 
     # mlc = int(np.concatenate(dataset.labels, 0)[:, 0].max())  # max label class
@@ -241,7 +233,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     # Process 0
     if RANK in [-1, 0]:
-        val_loader = create_me_dataloader(opt.val_list, imgsz, batch_size // WORLD_SIZE * 2, rank=-1, workers=workers)
+        val_loader = create_me_dataloader(opt.val_list, imgsz, batch_size // WORLD_SIZE * 2, rank=-1, workers=workers, augment=False)
                                         #   prefix=colorstr('val: '))
 
         if not resume:
@@ -288,6 +280,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     scaler = amp.GradScaler(enabled=cuda)
     stopper = EarlyStopping(patience=opt.patience)
     # compute_loss = ComputeLoss(model)  # init loss class
+    compute_loss_me = ComputeLossME(device, opt.feature_max)  # init loss class
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers} dataloader workers\n'
                 f"Logging results to {colorstr('bold', save_dir)}\n"
@@ -295,21 +288,15 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.eval()
 
-        # Update image weights (optional, single-GPU only)
-        # if opt.image_weights:
-        #     cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc  # class weights
-        #     iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
-        #     dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
-
         # Update mosaic border (optional)
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
-        mloss = torch.zeros(2, device=device)  # mean losses
+        mloss = torch.zeros(3, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
-        LOGGER.info(('\n' + '%10s' * 5) % ('Epoch', 'gpu_mem', 'L1', 'L2', 'img_size'))
+        LOGGER.info(('\n' + '%10s' * 5) % ('Epoch', 'gpu_mem', 'L1', 'L2', 'psnr'))
         if RANK in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
@@ -330,31 +317,17 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     if 'momentum' in x:
                         x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
 
-            # Multi-scale
-            # if opt.multi_scale:
-            #     sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
-            #     sf = sz / max(imgs.shape[2:])  # scale factor
-            #     if sf != 1:
-            #         ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
-            #         imgs = nn.functional.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
-
             # Forward
             with amp.autocast(enabled=cuda):
-                # pred = model(imgs)  # forward
-
                 T1 = model(ref1, cut_model=1)  # first half of the model
                 T2 = model(ref2, cut_model=1)  # first half of the model
                 Ttrg = model(target, cut_model=1)  # first half of the model
-                # print(T.size())
                 T1_tilde = autoencoder(T1, task='enc')
                 T2_tilde = autoencoder(T2, task='enc')
                 Ttrg_tilde = autoencoder(Ttrg, task='enc')
-                # print(T_hat.size())
-                # pred = model(None, cut_model=2, T=T_hat)  # second half of the model
-                # print(pred.size())
                 T_in = torch.cat((T1_tilde, T2_tilde), 1)
                 Ttrg_hat = motion_estimator(T_in)
-                loss, loss_items = compute_loss_me(Ttrg_hat, Ttrg_tilde, device=device)
+                loss, loss_items = compute_loss_me(Ttrg_hat, Ttrg_tilde)
                 # loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
@@ -369,15 +342,13 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 scaler.step(optimizer)  # optimizer.step
                 scaler.update()
                 optimizer.zero_grad()
-                # if ema:
-                #     ema.update(model)
                 last_opt_step = ni
 
             # Log
             if RANK in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%10s' * 2 + '%10.4g' * 2) % (f'{epoch}/{epochs - 1}', mem, *mloss))
+                pbar.set_description(('%10s' * 2 + '%10.4g' * 3) % (f'{epoch}/{epochs - 1}', mem, *mloss))
                 # callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
             # end batch ------------------------------------------------------------------------------------------------
 
@@ -388,10 +359,10 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         if RANK in [-1, 0]:
             # mAP
             callbacks.run('on_train_epoch_end', epoch=epoch)
-            # ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'names', 'stride', 'class_weights'])
             final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
             if not noval or final_epoch:  # Calculate mAP
                 results = val_me_dnn.run(data_dict,
+                                         opt.val_list,
                                          batch_size=batch_size // WORLD_SIZE * 2,
                                          imgsz=imgsz,
                                          model = deepcopy(model).eval().half(),
@@ -400,6 +371,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                          save_dir=save_dir,
                                          plots=False,
                                          callbacks=callbacks,
+                                         compute_loss_me=compute_loss_me,
                                          autoencoder=deepcopy(autoencoder).half(),
                                          motion_estimator=deepcopy(motion_estimator).half())
 
@@ -407,8 +379,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             # fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             # if fi > best_fitness:
             #     best_fitness = fi
-            fi = results[0]
-            if fi < best_fitness:
+            fi = 1 / results[0]
+            if fi >= best_fitness:
                 best_fitness = fi
             log_vals = list(mloss) + list(results) + lr
             callbacks.run('on_fit_epoch_end_me', log_vals, epoch, best_fitness, fi)
@@ -418,12 +390,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 mednn_ckpt = {'epoch': epoch,
                               'best_fitness': best_fitness,
                               'model': deepcopy(de_parallel(motion_estimator)).half().state_dict(),
-                              # 'ema': deepcopy(ema.ema).half(),
-                              # 'updates': ema.updates,
                               'optimizer': optimizer.state_dict(),
                               'wandb_id': loggers.wandb.wandb_run.id if loggers.wandb else None,
                               'date': datetime.now().isoformat()}
-                # supp_ckpt = {'model': deepcopy(de_parallel(autoencoder)).half().state_dict()}
 
                 # Save last, best and delete
                 torch.save(mednn_ckpt, last)
@@ -432,58 +401,46 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 if (epoch > 0) and (opt.save_period > 0) and (epoch % opt.save_period == 0):
                     torch.save(mednn_ckpt, w / f'epoch{epoch}.pt')
                 del mednn_ckpt
-                # callbacks.run('on_model_save', last, epoch, final_epoch, best_fitness, fi)
+                callbacks.run('on_model_save', last, epoch, final_epoch, best_fitness, fi)
 
             # Stop Single-GPU
             if RANK == -1 and stopper(epoch=epoch, fitness=fi):
                 break
 
-            # Stop DDP TODO: known issues shttps://github.com/ultralytics/yolov5/pull/4576
-            # stop = stopper(epoch=epoch, fitness=fi)
-            # if RANK == 0:
-            #    dist.broadcast_object_list([stop], 0)  # broadcast 'stop' to all ranks
-
-        # Stop DPP
-        # with torch_distributed_zero_first(RANK):
-        # if stop:
-        #    break  # must break all DDP ranks
-
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
-    # del model, autoencoder
 
-    # if RANK in [-1, 0]:
-    #     del model, autoencoder
-    #     LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
-    #     for f in last, best:
-    #         if f.exists():
-    #             strip_optimizer(f)  # strip optimizers
-    #             if f is best:
+    if RANK in [-1, 0]:
+        del motion_estimator
+        LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
+        for f in last, best:
+            if f.exists():
+                # strip_optimizer(f)  # strip optimizers
+                if f is best:
 
-    #                 best_autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
-    #                 ckpt = torch.load(supp_best)
-    #                 best_autoencoder.load_state_dict(ckpt['model'])
+                    best_motion_estimator = MotionEstimation(opt.autoenc_chs[-1]).to(device)
+                    ckpt = torch.load(best)
+                    best_motion_estimator.load_state_dict(ckpt['model'])
 
-    #                 LOGGER.info(f'\nValidating {f}...')
-    #                 results, _, _ = val.run(data_dict,
-    #                                         batch_size=batch_size // WORLD_SIZE * 2,
-    #                                         imgsz=imgsz,
-    #                                         model=attempt_load(f, device).half(),
-    #                                         iou_thres=0.65 if is_coco else 0.60,  # best pycocotools results at 0.65
-    #                                         single_cls=single_cls,
-    #                                         dataloader=val_loader,
-    #                                         save_dir=save_dir,
-    #                                         save_json=is_coco,
-    #                                         verbose=True,
-    #                                         plots=True,
-    #                                         callbacks=callbacks,
-    #                                         compute_loss=compute_loss,      # val best model with plots
-    #                                         autoencoder=best_autoencoder.half())
-    #                 if is_coco:
-    #                     callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
+                    LOGGER.info(f'\nValidating {f}...')
+                    results = val_me_dnn.run(data_dict,
+                                                   opt.val_list,
+                                                   batch_size=batch_size // WORLD_SIZE * 2,
+                                                   imgsz=imgsz,
+                                                   model = deepcopy(model).eval().half(),
+                                                   single_cls=single_cls,
+                                                   dataloader=val_loader,
+                                                   save_dir=save_dir,
+                                                   plots=False,
+                                                   callbacks=callbacks,
+                                                   compute_loss_me=compute_loss_me,
+                                                   autoencoder=deepcopy(autoencoder).half(),
+                                                   motion_estimator=deepcopy(best_motion_estimator).half())
+                    if is_coco:
+                        callbacks.run('on_fit_epoch_end_me', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
 
-    #     callbacks.run('on_train_end', last, best, plots, epoch, results)
-    #     LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}")
+        # callbacks.run('on_train_end', last, best, plots, epoch, results)
+        LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}")
 
     torch.cuda.empty_cache()
     # return results
@@ -530,6 +487,7 @@ def parse_opt(known=False):
     parser.add_argument('--train-yolo', type=str, default='all', help='which part of the yolo gets trained: backend, all, nothing')
     parser.add_argument('--train-list', type=str, default=None, help='txt file containing the training list')
     parser.add_argument('--val-list', type=str, default=None, help='txt file containing the validation list')
+    parser.add_argument('--feature-max', type=float, default=20, help='The maximum range of the bottleneck features (for PSNR calculations)')
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
     return opt
