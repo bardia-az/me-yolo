@@ -123,17 +123,20 @@ class MotionEstimation(nn.Module):
             if isinstance(v, nn.Conv2d) :
                 init.constant_(v.weight, 0.)
         self.MoCmpns3_d   = torchvision.ops.DeformConv2d(in_channels=in_channels*8, out_channels=in_channels*8, kernel_size=3, padding=1, groups=in_channels, bias=False)
-        self.Conv3_d      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*10, numOutCh=in_channels*8)
+        # self.Conv3_d      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*10, numOutCh=in_channels*8)
+        self.Conv3_d      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*7, numOutCh=in_channels*6)
 
         # upward path
-        self.Upsample2    = Upsampling(intInput=in_channels*8, kSize=3)
+        # self.Upsample2    = Upsampling(intInput=in_channels*8, kSize=3)
+        self.Upsample2    = Upsampling(intInput=in_channels*6, kSize=3)
 
         self.EstOff2_u    = EstimateOffsets(numInputCh=in_channels*8, numMidCh=in_channels*9, numOutCh=in_channels*9*2)
         for v in self.EstOff2_u.modules():
             if isinstance(v, nn.Conv2d) :
                 init.constant_(v.weight, 0.)
         self.MoCmpns2_u   = torchvision.ops.DeformConv2d(in_channels=in_channels*8, out_channels=in_channels*8, kernel_size=3, padding=1, groups=in_channels, bias=False)
-        self.Conv2_u      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*6, numOutCh=in_channels*4)
+        # self.Conv2_u      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*6, numOutCh=in_channels*4)
+        self.Conv2_u      = ConvBasic(numInputCh=in_channels*14, numMidCh=in_channels*8, numOutCh=in_channels*4)
 
         self.Upsample1    = Upsampling(intInput=in_channels*4, kSize=3)
 
@@ -142,7 +145,8 @@ class MotionEstimation(nn.Module):
             if isinstance(v, nn.Conv2d) :
                 init.constant_(v.weight, 0.)
         self.MoCmpns1_u   = torchvision.ops.DeformConv2d(in_channels=in_channels*4, out_channels=in_channels*4, kernel_size=3, padding=1, groups=in_channels, bias=False)
-        self.Conv1_u      = ConvBasic(numInputCh=in_channels*4, numMidCh=in_channels*2, numOutCh=in_channels)
+        # self.Conv1_u      = ConvBasic(numInputCh=in_channels*4, numMidCh=in_channels*2, numOutCh=in_channels)
+        self.Conv1_u      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*4, numOutCh=in_channels)
 
 #   def forward(self, x1, x2):
     def forward(self, x):
@@ -168,15 +172,21 @@ class MotionEstimation(nn.Module):
 
         usmpl2      = self.Upsample2(F.interpolate(conv3_d, scale_factor=2.0, mode='bilinear', align_corners=True))
 
-        off2_u      = self.EstOff2_u(usmpl2+conv2_d)
-        compns2_u   = self.MoCmpns2_u(input=usmpl2+conv2_d, offset=off2_u)
-        conv2_u     = self.Conv2_u(compns2_u)
+        u2_in       = torch.cat((usmpl2, conv2_d), 1)
+        # off2_u      = self.EstOff2_u(u2_in)
+        # compns2_u   = self.MoCmpns2_u(input=u2_in, offset=off2_u)
+        # # off2_u      = self.EstOff2_u(usmpl2+conv2_d)
+        # # compns2_u   = self.MoCmpns2_u(input=usmpl2+conv2_d, offset=off2_u)
+        conv2_u     = self.Conv2_u(u2_in)
 
         usmpl1      = self.Upsample1(F.interpolate(conv2_u, scale_factor=2.0, mode='bilinear', align_corners=True))
 
-        off1_u      = self.EstOff1_u(usmpl1+conv1_d)
-        compns1_u   = self.MoCmpns1_u(input=usmpl1+conv1_d, offset=off1_u)
-        conv1_u     = self.Conv1_u(compns1_u)
+        u1_in       = torch.cat((usmpl1, conv1_d), 1)
+        # off1_u      = self.EstOff1_u(u1_in)
+        # compns1_u   = self.MoCmpns1_u(input=u1_in, offset=off1_u)
+        # # off1_u      = self.EstOff1_u(usmpl1+conv1_d)
+        # # compns1_u   = self.MoCmpns1_u(input=usmpl1+conv1_d, offset=off1_u)
+        conv1_u     = self.Conv1_u(u1_in)
 
         return conv1_u
 
@@ -189,14 +199,9 @@ if __name__ == '__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     #   set_cuda_devices(device, '0')
 
-    x     = (22, 128, 128)
-    mvRef = (2, 128, 128)
+    x     = (4, 128, 128)
 
-    model = MotionEstimation(in_channels = 22)
-
-    #if torch.cuda.device_count() > 1:
-    #    print("Let's use", torch.cuda.device_count(), "GPUs!")
-    #    model = nn.DataParallel(model)
+    model = MotionEstimation(in_channels = 2)
 
     model.to(device)
     summary(model, [x])
