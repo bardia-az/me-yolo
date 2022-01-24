@@ -130,21 +130,21 @@ class MotionEstimation(nn.Module):
         # self.Upsample2    = Upsampling(intInput=in_channels*8, kSize=3)
         self.Upsample2    = Upsampling(intInput=in_channels*6, kSize=3)
 
-        self.EstOff2_u    = EstimateOffsets(numInputCh=in_channels*8, numMidCh=in_channels*9, numOutCh=in_channels*9*2)
-        for v in self.EstOff2_u.modules():
-            if isinstance(v, nn.Conv2d) :
-                init.constant_(v.weight, 0.)
-        self.MoCmpns2_u   = torchvision.ops.DeformConv2d(in_channels=in_channels*8, out_channels=in_channels*8, kernel_size=3, padding=1, groups=in_channels, bias=False)
+        # self.EstOff2_u    = EstimateOffsets(numInputCh=in_channels*8, numMidCh=in_channels*9, numOutCh=in_channels*9*2)
+        # for v in self.EstOff2_u.modules():
+        #     if isinstance(v, nn.Conv2d) :
+        #         init.constant_(v.weight, 0.)
+        # self.MoCmpns2_u   = torchvision.ops.DeformConv2d(in_channels=in_channels*8, out_channels=in_channels*8, kernel_size=3, padding=1, groups=in_channels, bias=False)
         # self.Conv2_u      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*6, numOutCh=in_channels*4)
         self.Conv2_u      = ConvBasic(numInputCh=in_channels*14, numMidCh=in_channels*8, numOutCh=in_channels*4)
 
         self.Upsample1    = Upsampling(intInput=in_channels*4, kSize=3)
 
-        self.EstOff1_u    = EstimateOffsets(numInputCh=in_channels*4, numMidCh=in_channels*9, numOutCh=in_channels*9*2)
-        for v in self.EstOff1_u.modules():
-            if isinstance(v, nn.Conv2d) :
-                init.constant_(v.weight, 0.)
-        self.MoCmpns1_u   = torchvision.ops.DeformConv2d(in_channels=in_channels*4, out_channels=in_channels*4, kernel_size=3, padding=1, groups=in_channels, bias=False)
+        # self.EstOff1_u    = EstimateOffsets(numInputCh=in_channels*4, numMidCh=in_channels*9, numOutCh=in_channels*9*2)
+        # for v in self.EstOff1_u.modules():
+        #     if isinstance(v, nn.Conv2d) :
+        #         init.constant_(v.weight, 0.)
+        # self.MoCmpns1_u   = torchvision.ops.DeformConv2d(in_channels=in_channels*4, out_channels=in_channels*4, kernel_size=3, padding=1, groups=in_channels, bias=False)
         # self.Conv1_u      = ConvBasic(numInputCh=in_channels*4, numMidCh=in_channels*2, numOutCh=in_channels)
         self.Conv1_u      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*4, numOutCh=in_channels)
 
