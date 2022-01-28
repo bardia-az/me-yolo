@@ -217,7 +217,7 @@ def run(data,
             if track_stats:
                 stats_bottleneck.update_stats(T_bottleneck.detach().clone().cpu().numpy())
             if compressibility_loss:
-                loss_r += compressibility_loss(T_bottleneck.float())[0]
+                loss_r += compressibility_loss(T_bottleneck.float())[1]
         else:
             # out = model(img, augment=augment, cut_model=cut_model, T=T)  # inference and training outputs
             # torch.save(out, 'bullshit/T.t')

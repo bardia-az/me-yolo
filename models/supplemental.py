@@ -173,20 +173,23 @@ class MotionEstimation(nn.Module):
         usmpl2      = self.Upsample2(F.interpolate(conv3_d, scale_factor=2.0, mode='bilinear', align_corners=True))
 
         u2_in       = torch.cat((usmpl2, conv2_d), 1)
+        conv2_u     = self.Conv2_u(u2_in)
         # off2_u      = self.EstOff2_u(u2_in)
         # compns2_u   = self.MoCmpns2_u(input=u2_in, offset=off2_u)
-        # # off2_u      = self.EstOff2_u(usmpl2+conv2_d)
-        # # compns2_u   = self.MoCmpns2_u(input=usmpl2+conv2_d, offset=off2_u)
-        conv2_u     = self.Conv2_u(u2_in)
+        # off2_u      = self.EstOff2_u(usmpl2+conv2_d)
+        # compns2_u   = self.MoCmpns2_u(input=usmpl2+conv2_d, offset=off2_u)
+        # conv2_u     = self.Conv2_u(compns2_u)
+        
 
         usmpl1      = self.Upsample1(F.interpolate(conv2_u, scale_factor=2.0, mode='bilinear', align_corners=True))
 
         u1_in       = torch.cat((usmpl1, conv1_d), 1)
+        conv1_u     = self.Conv1_u(u1_in)
         # off1_u      = self.EstOff1_u(u1_in)
         # compns1_u   = self.MoCmpns1_u(input=u1_in, offset=off1_u)
-        # # off1_u      = self.EstOff1_u(usmpl1+conv1_d)
-        # # compns1_u   = self.MoCmpns1_u(input=usmpl1+conv1_d, offset=off1_u)
-        conv1_u     = self.Conv1_u(u1_in)
+        # off1_u      = self.EstOff1_u(usmpl1+conv1_d)
+        # compns1_u   = self.MoCmpns1_u(input=usmpl1+conv1_d, offset=off1_u)
+        # conv1_u     = self.Conv1_u(compns1_u)
 
         return conv1_u
 

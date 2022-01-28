@@ -25,6 +25,7 @@
 
 storage.googleapis.com
 runs/*
+working_dir/*
 #data/*
 #!data/hyps/*
 #!data/images/zidane.jpg

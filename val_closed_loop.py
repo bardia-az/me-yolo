@@ -16,7 +16,10 @@ from threading import Thread
 import numpy as np
 import torch
 from tqdm import tqdm
-# import torchjpeg.dct as dct
+import subprocess
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.rcParams['figure.dpi'] = 200
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
@@ -82,95 +85,112 @@ def process_batch(detections, labels, iouv):
     return correct
 
 
+def read_y_channel(file_name, w, h):
+    with open(file_name, 'rb') as f:
+        raw = f.read(w*h)
+        raw = np.frombuffer(raw, dtype=np.uint8)
+        raw = raw.reshape((h,w))
+        # raw = raw / 255.0
+        # raw = raw.astype('float32')
+    return raw
+
+def get_tensors(img, model, autoencoder):
+    T = model(img, cut_model=1)  # first half of the model
+    T_bottleneck = autoencoder(T, task='enc')
+    return T_bottleneck
+
+def motion_estimation(ref_tensors, model):
+    ref_num, ch_num, ch_h, ch_w = ref_tensors.shape
+    # T_in = torch.zeros((ch_num*2, ch_w, ch_h))
+    # T_in[0,:,:,:] = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
+    T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
+    return model(T_in[None, :])
+
+def tensors_to_tiled(tensor, tensors_w, tensors_h, tensors_min, tensors_max):
+    shape = tensor.shape
+    ch_num_w, ch_num_h = tensors_w // shape[3], tensors_h // shape[2]
+    assert shape[1] == ch_num_w*ch_num_h, 'tensors_w & tensors_h are not valid values based on the latent tensors'
+    tensor = torch.clamp(tensor, tensors_min, tensors_max)
+    tensor = torch.reshape(tensor, (ch_num_h, ch_num_w, shape[2], shape[3]))
+    tensor = torch.round((tensor - tensors_min) * 255 / (tensors_max - tensors_min))
+    # img = plt.imshow(tensor.cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
+    return tensor.swapaxes(1,2).reshape((tensors_h, tensors_w))
+
+def tiled_to_tensor(tiled, ch_w, ch_h, tensors_min, tensors_max):
+    shape = tiled.shape
+    ch_num_w, ch_num_h = shape[1] // ch_w, shape[0] // ch_h
+    tiled = torch.reshape(tiled, (ch_num_h, ch_h, ch_num_w, ch_w))
+    tiled = tiled / 255 * (tensors_max - tensors_min) + tensors_min
+    tensor = tiled.swapaxes(1,2).reshape((-1, ch_h, ch_w))
+    return tensor
+
+def encode_frame(data, tensors_w, tensors_h, txt_file, opt):
+    VVC_command = ['working_dir/vvencFFapp', '-c', 'working_dir/lowdelay_faster.cfg', '-i', 'working_dir/to_be_coded_frame.yuv', '-b', 'working_dir/bitstream.bin', 
+                   '-o', 'working_dir/reconst.yuv', '--SourceWidth', str(tensors_w), '--SourceHeight', str(tensors_h), '-f', '1', '-fr', str(opt.frame_rate), '-q', str(opt.qp)]
+    to_be_coded_file = 'working_dir/to_be_coded_frame.yuv'
+    with open(to_be_coded_file, 'wb') as f:
+        f.write(data)
+    subprocess.call(VVC_command, stdout=txt_file)
+    Byte_num = os.path.getsize('working_dir/bitstream.bin')/1024.0
+    tmp_reconst = read_y_channel('working_dir/reconst.yuv', tensors_w, tensors_h)
+    return tmp_reconst, Byte_num
+
+def get_yolo_prediction(T, autoencoder, model):
+    T_hat = autoencoder(T, task='dec', bottleneck=T)
+    out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model
+    return out
+
+
+
 @torch.no_grad()
-def run(data,
-        weights=None,  # model.pt path(s)
-        batch_size=1,  # batch size
-        imgsz=640,  # inference size (pixels)
-        conf_thres=0.001,  # confidence threshold
-        iou_thres=0.6,  # NMS IoU threshold
-        task='val',  # train, val, test, speed or study
-        device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
-        single_cls=False,  # treat as single-class dataset
-        augment=False,  # augmented inference
-        verbose=False,  # verbose output
-        save_txt=False,  # save results to *.txt
-        save_hybrid=False,  # save label+prediction hybrid results to *.txt
-        save_conf=False,  # save confidences in --save-txt labels
-        save_json=False,  # save a COCO-JSON results file
-        project=ROOT / 'runs/val',  # save to project/name
-        name='exp',  # save to project/name
-        exist_ok=False,  # existing project/name ok, do not increment
-        half=True,  # use FP16 half-precision inference
-        autoenc_chs=None,
-        supp_weights=None,  # model.pt path(s)
-        weights_me=None,
-        track_stats=False,
-        dist_range=[-10,14],
-        bins=10000,
-        frame_rate=50,
-        qp=24,
-        model=None,
-        dataloader=None,
-        save_dir=Path(''),
-        plots=True,
-        callbacks=Callbacks(),
-        compute_loss=None,
-        autoencoder=None,
-        ):
-    # Initialize/load model and set device
-    training = model is not None
-    if training:  # called by train.py
-        device = next(model.parameters()).device  # get model device
+def val_closed_loop(opt,
+                    callbacks=Callbacks()):
 
-    else:  # called directly
-        device = select_device(device, batch_size=batch_size)
+    save_dir, batch_size, weights, single_cls, data, supp_weights, half, weights_me, plots, tensors_w, tensors_h, tensors_min, tensors_max, res_min, res_max = \
+        Path(opt.save_dir), opt.batch_size, opt.weights, opt.single_cls, opt.data, opt.supp_weights, opt.half, opt.weights_me, False, \
+        opt.tensors_w, opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max
 
-        # Directories
-        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+    device = select_device(opt.device, batch_size=batch_size)
 
-        print_args_to_file(opt, save_dir / 'result.txt')
+    # Load model
+    assert supp_weights is not None, 'yolo model weights should be available'
+    check_suffix(weights, '.pt')
+    model = attempt_load(weights, map_location=device)  # load FP32 model
+    gs = max(int(model.stride.max()), 32)  # grid size (max stride)
+    imgsz = check_img_size(opt.imgsz, s=gs)  # check image size
 
-        # Load model
-        check_suffix(weights, '.pt')
-        model = attempt_load(weights, map_location=device)  # load FP32 model
-        gs = max(int(model.stride.max()), 32)  # grid size (max stride)
-        imgsz = check_img_size(imgsz, s=gs)  # check image size
+    # Data
+    video_name = data.split('/')[-1].split('.')[0]
+    video = f'{video_name}_QP{opt.qp}'
+    data = check_dataset(data)  # check
 
-        # Multi-GPU disabled, incompatible with .half() https://github.com/ultralytics/yolov5/issues/99
-        # if device.type != 'cpu' and torch.cuda.device_count() > 1:
-        #     model = nn.DataParallel(model)
-
-        # Data
-        video_name = data.split('.')[0]
-        data = check_dataset(data)  # check
+    result_f = Path(save_dir / f'result_{video}').with_suffix('.txt')
+    print_args_to_file(opt, result_f)
 
     # Half
     half &= device.type != 'cpu'  # half precision only supported on CUDA
     model.half() if half else model.float()
 
     # Loading Autoencoder and Motion Estimator
-    if not training:
-        assert supp_weights is not None, 'autoencoder weights should be available'
-        assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
-        autoencoder = AutoEncoder(autoenc_chs).to(device)
-        supp_ckpt = torch.load(supp_weights, map_location=device)
-        autoencoder.load_state_dict(supp_ckpt['model'])
-        print('autoencoder loaded successfully')
-        del supp_ckpt
-        autoencoder.half() if half else autoencoder.float()
-        autoencoder.eval()
+    assert supp_weights is not None, 'autoencoder weights should be available'
+    assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
+    autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
+    supp_ckpt = torch.load(supp_weights, map_location=device)
+    autoencoder.load_state_dict(supp_ckpt['model'])
+    print('autoencoder loaded successfully')
+    del supp_ckpt
+    autoencoder.half() if half else autoencoder.float()
+    autoencoder.eval()
 
-        assert weights_me is not None, 'motion estimator weights should be available'
-        assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
-        motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
-        me_ckpt = torch.load(weights_me, map_location=device)
-        motion_estimator.load_state_dict(me_ckpt['model'])
-        print('motion estimator loaded successfully')
-        del me_ckpt
-        motion_estimator.half() if half else autoencoder.float()
-        motion_estimator.eval()
+    assert weights_me is not None, 'motion estimator weights should be available'
+    assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
+    motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+    me_ckpt = torch.load(weights_me, map_location=device)
+    motion_estimator.load_state_dict(me_ckpt['model'])
+    print('motion estimator loaded successfully')
+    del me_ckpt
+    motion_estimator.half() if half else autoencoder.float()
+    motion_estimator.eval()
 
     # Configure
     model.eval()
@@ -180,12 +200,11 @@ def run(data,
     niou = iouv.numel()
 
     # Dataloader
-    if not training:
-        if device.type != 'cpu':
-            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-        pad = 0.0 if task == 'speed' else 0.5
-        task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
-        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, single_cls, pad=pad, rect=True,
+    if device.type != 'cpu':
+        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+    pad = 0.5
+    task = 'val'
+    video_sequence = create_dataloader(data[task], imgsz, batch_size, gs, single_cls, pad=pad, rect=False, rect_img=True,
                                        prefix=colorstr(f'{task}: '))[0]
 
     seen = 0
@@ -199,18 +218,33 @@ def run(data,
 
     # stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
 
-    src_width = src_height = 1024
-
-    VVC_command = ['working_dir/vvencFFapp', '-c', 'working_dir/lowdelay_faster.cfg', '-i', 'working_dir/to_be_coded_frame.yuv', '-b', 'working_dir/bitstream.bin', 
-                   '-o', 'working_dir/reconst.yuv', '--SourceWidth', str(src_width), '--SourceHeight', str(src_height), '-f', '1', '-fr', str(frame_rate), '-q', str(qp)]
-
-    video = f'{video_name}_QP{qp}'
     
-    to_be_coded_frame_full_name = 'working_dir/to_be_coded_frame_full_' + video + '.yuv'
-    predicted_frame_full_name = 'working_dir/predicted_frame_full_' + video + '.yuv'
-    output_video = 'working_dir/reconst_' + video + '.yuv'
+    
+    (save_dir / 'to_be_coded').mkdir(parents=True, exist_ok=True)
+    (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
+    (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
+    (save_dir / 'report').mkdir(parents=True, exist_ok=True)
 
-    for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+    to_be_coded_full_name = (save_dir / 'to_be_coded' / video).with_suffix('.yuv')
+    predicted_full_name = (save_dir / 'predicted' / video).with_suffix('.yuv')
+    reconstructed_full_name = (save_dir / 'reconstructed' / video).with_suffix('.yuv')
+    txt_file_name = (save_dir / 'report' / video).with_suffix('.txt')
+
+    # assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before'
+
+    full_to_be_coded_frame_f = to_be_coded_full_name.open('ab')
+    full_predicted_f = predicted_full_name.open('ab')
+    reconst_video_f = reconstructed_full_name.open('ab')
+    txt_file = txt_file_name.open('a')
+
+    ref_num = 2
+    ch_w, ch_h = 128, 128
+    ch_num_w, ch_num_h = (tensors_w//ch_w), (tensors_h//ch_h)
+    ch_num = ch_num_w * ch_num_h
+    ref_tensors = torch.zeros((ref_num, ch_num, ch_w, ch_h))
+    Byte_num_seq = []
+
+    for fr, (img, targets, paths, shapes) in enumerate(tqdm(video_sequence, desc=s)):
         t1 = time_sync()
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -220,30 +254,54 @@ def run(data,
         t2 = time_sync()
         dt[0] += t2 - t1
 
-        # Run model
-        cut_model = 0
-        T = None
-        
-        if(autoencoder is not None):
-            T = model(img, augment=augment, cut_model=1)  # first half of the model
-            T_bottleneck = autoencoder(T, task='enc')
-            T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
-            out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model
+        tensors = get_tensors(img, model, autoencoder)
+
+        if fr < ref_num:
+            tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+            to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
+            full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, txt_file, opt)
+            Byte_num_seq.append(Byte_num)
+            reconst_video_f.write(tmp_reconst.flatten())
+            tiled_tensors = torch.from_numpy(tmp_reconst).to(device)
+            tiled_tensors = tiled_tensors.half() if half else tiled_tensors.float()
+            tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
+            ref_tensors[fr,:,:,:] = tensors
+            out = get_yolo_prediction(tensors[None, :], autoencoder, model)
+            # plt.imshow(ref_tensors[0].reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
+            # err = tensors1[0] - ref_tensors[fr,:,:,:]
+            # plt.imshow(err.reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
+        else:
+            pred_tensors = motion_estimation(ref_tensors, motion_estimator)
+            residual = tensors - pred_tensors
+            tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
+            to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
+            full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, txt_file, opt)
+            Byte_num_seq.append(Byte_num)
+            reconst_video_f.write(tmp_reconst.flatten())
+            tiled_res = torch.from_numpy(tmp_reconst).to(device)
+            tiled_res = tiled_res.half() if half else tiled_res.float()
+            residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
+            tensors = residual + pred_tensors[0,:,:,:]
+            ref_tensors = torch.roll(ref_tensors, -1, 0)
+            ref_tensors[ref_num-1,:,:,:] = tensors
+            tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+            pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
+            full_predicted_f.write(pred_data)
+            out = get_yolo_prediction(tensors[None, :], autoencoder, model)
+
             # if track_stats:
             #     stats_bottleneck.update_stats(T_bottleneck.detach().clone().cpu().numpy())
 
 
         dt[1] += time_sync() - t2
 
-        # Compute loss
-        if compute_loss:
-            loss += compute_loss([x.float() for x in train_out], targets)[1]  # box, obj, cls
-
         # Run NMS
         targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
-        lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
+        lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if opt.save_hybrid else []  # for autolabelling
         t3 = time_sync()
-        out = non_max_suppression(out, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
+        out = non_max_suppression(out, opt.conf_thres, opt.iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
         dt[2] += time_sync() - t3
 
         # Statistics per image
@@ -278,17 +336,17 @@ def run(data,
             stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))  # (correct, conf, pcls, tcls)
 
             # Save/log
-            if save_txt:
-                save_one_txt(predn, save_conf, shape, file=save_dir / 'labels' / (path.stem + '.txt'))
-            if save_json:
+            if opt.save_txt:
+                save_one_txt(predn, opt.save_conf, shape, file=save_dir / 'labels' / (path.stem + '.txt'))
+            if opt.save_json:
                 save_one_json(predn, jdict, path, class_map)  # append to COCO-JSON dictionary
             callbacks.run('on_val_image_end', pred, predn, path, names, img[si])
 
         # Plot images
-        if plots and batch_i < 3:
-            f = save_dir / f'val_batch{batch_i}_labels.jpg'  # labels
+        if plots and fr < 3:
+            f = save_dir / f'val_batch{fr}_labels.jpg'  # labels
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
-            f = save_dir / f'val_batch{batch_i}_pred.jpg'  # predictions
+            f = save_dir / f'val_batch{fr}_pred.jpg'  # predictions
             Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
 
     # Compute statistics
@@ -309,11 +367,11 @@ def run(data,
         f.write('\n\n' + s + '\n')
         f.write(pf % ('all', seen, nt.sum(), mp, mr, map50*100, map*100) + '\n')
     
-    if track_stats:
-        stats_bottleneck.output_stats(save_dir)
+    # if opt.track_stats:
+    #     stats_bottleneck.output_stats(save_dir)
         
     # Print results per class
-    if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
+    if (opt.verbose or nc<50) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
             with open(save_dir / 'result.txt', 'a') as f:
@@ -321,9 +379,8 @@ def run(data,
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
-    if not training:
-        shape = (batch_size, 3, imgsz, imgsz)
-        LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
+    shape = (batch_size, 3, imgsz, imgsz)
+    LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
 
     # Plots
     if plots:
@@ -331,7 +388,7 @@ def run(data,
         callbacks.run('on_val_end')
 
     # Save JSON
-    if save_json and len(jdict):
+    if opt.save_json and len(jdict):
         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
         anno_json = str(Path(data.get('path', '../coco')) / 'annotations/instances_val2017.json')  # annotations json
         pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
@@ -348,7 +405,7 @@ def run(data,
             pred = anno.loadRes(pred_json)  # init predictions api
             eval = COCOeval(anno, pred, 'bbox')
             if is_coco:
-                eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.img_files]  # image IDs to evaluate
+                eval.params.imgIds = [int(Path(x).stem) for x in video_sequence.dataset.img_files]  # image IDs to evaluate
             eval.evaluate()
             eval.accumulate()
             eval.summarize()
@@ -358,13 +415,12 @@ def run(data,
 
     # Return results
     model.float()  # for training
-    if not training:
-        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
-        LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
+    s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if opt.save_txt else ''
+    LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    return (mp, mr, map50, map, *(loss.cpu() / len(video_sequence)).tolist()), maps, t
 
 
 def parse_opt():
@@ -375,16 +431,14 @@ def parse_opt():
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.6, help='NMS IoU threshold')
-    parser.add_argument('--task', default='val', help='train, val, test, speed or study')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--single-cls', action='store_true', help='treat as single-class dataset')
-    parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument('--verbose', action='store_true', help='report mAP by class')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--save-hybrid', action='store_true', help='save label+prediction hybrid results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-json', action='store_true', help='save a COCO-JSON results file')
-    parser.add_argument('--project', default=ROOT / 'runs/val', help='save to project/name')
+    parser.add_argument('--project', default=ROOT / 'runs/closed_loop', help='save to project/name')
     parser.add_argument('--name', default='exp', help='save to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
@@ -404,6 +458,12 @@ def parse_opt():
     parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
     parser.add_argument('--frame-rate', type=int, default=50, help='frame-rate for the vvc encoder')
     parser.add_argument('--qp', type=int, default=24, help='QP for the vvc encoder')
+    parser.add_argument('--tensors-w', type=int, default=1024, help='width of the tiled tensor frames')
+    parser.add_argument('--tensors-h', type=int, default=1024, help='height of the tiled tensor frames')
+    parser.add_argument('--tensors-min', type=float, default=-0.2, help='the clipping lower bound for the intermediate tensors')
+    parser.add_argument('--tensors-max', type=float, default=6, help='the clipping upper bound for the intermediate tensors')
+    parser.add_argument('--res-min', type=float, default=-6, help='the clipping lower bound for the residuals')
+    parser.add_argument('--res-max', type=float, default=6, help='the clipping upper bound for the residuals')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
@@ -416,29 +476,20 @@ def parse_opt():
 def main(opt):
     check_requirements(requirements=ROOT / 'requirements.txt', exclude=('tensorboard', 'thop'))
 
-    if opt.task in ('train', 'val', 'test'):  # run normally
-        run(**vars(opt))
+    # Directories
+    save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)  # increment run
+    (save_dir / 'labels' if opt.save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+    opt.save_dir = save_dir
 
-    elif opt.task == 'speed':  # speed benchmarks
-        # python val.py --task speed --data coco.yaml --batch 1 --weights yolov5n.pt yolov5s.pt...
-        for w in opt.weights if isinstance(opt.weights, list) else [opt.weights]:
-            run(opt.data, weights=w, batch_size=opt.batch_size, imgsz=opt.imgsz, conf_thres=.25, iou_thres=.45,
-                device=opt.device, save_json=False, plots=False)
+    val_closed_loop(opt)
 
-    elif opt.task == 'study':  # run over a range of settings and save/plot
-        # python val.py --task study --data coco.yaml --iou 0.7 --weights yolov5n.pt yolov5s.pt...
-        x = list(range(256, 1536 + 128, 128))  # x axis (image sizes)
-        for w in opt.weights if isinstance(opt.weights, list) else [opt.weights]:
-            f = f'study_{Path(opt.data).stem}_{Path(w).stem}.txt'  # filename to save to
-            y = []  # y axis
-            for i in x:  # img-size
-                LOGGER.info(f'\nRunning {f} point {i}...')
-                r, _, t = run(opt.data, weights=w, batch_size=opt.batch_size, imgsz=i, conf_thres=opt.conf_thres,
-                              iou_thres=opt.iou_thres, device=opt.device, save_json=opt.save_json, plots=False)
-                y.append(r + t)  # results and times
-            np.savetxt(f, y, fmt='%10.4g')  # save
-        os.system('zip -r study.zip study_*.txt')
-        plot_val_study(x=x)  # plot
+
+def run(**kwargs):
+    # Usage: import val_closed_loop; val_closed_loop.run(data='coco128.yaml', imgsz=320, weights='yolov5m.pt')
+    opt = parse_opt(True)
+    for k, v in kwargs.items():
+        setattr(opt, k, v)
+    main(opt)
 
 
 if __name__ == "__main__":
