@@ -241,7 +241,7 @@ def val_closed_loop(opt,
     ch_w, ch_h = 128, 128
     ch_num_w, ch_num_h = (tensors_w//ch_w), (tensors_h//ch_h)
     ch_num = ch_num_w * ch_num_h
-    ref_tensors = torch.zeros((ref_num, ch_num, ch_w, ch_h))
+    ref_tensors = torch.zeros((ref_num, ch_num, ch_w, ch_h), device=device)
     Byte_num_seq = []
 
     for fr, (img, targets, paths, shapes) in enumerate(tqdm(video_sequence, desc=s)):
@@ -263,7 +263,7 @@ def val_closed_loop(opt,
             tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, txt_file, opt)
             Byte_num_seq.append(Byte_num)
             reconst_video_f.write(tmp_reconst.flatten())
-            tiled_tensors = torch.from_numpy(tmp_reconst).to(device)
+            tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
             tiled_tensors = tiled_tensors.half() if half else tiled_tensors.float()
             tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
             ref_tensors[fr,:,:,:] = tensors
@@ -279,11 +279,12 @@ def val_closed_loop(opt,
             full_to_be_coded_frame_f.write(to_be_coded_frame_data)
             tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, txt_file, opt)
             Byte_num_seq.append(Byte_num)
-            reconst_video_f.write(tmp_reconst.flatten())
-            tiled_res = torch.from_numpy(tmp_reconst).to(device)
+            tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
             tiled_res = tiled_res.half() if half else tiled_res.float()
             residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
             tensors = residual + pred_tensors[0,:,:,:]
+            tiled_tensors = tensors_to_tiled(tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
+            reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
             ref_tensors = torch.roll(ref_tensors, -1, 0)
             ref_tensors[ref_num-1,:,:,:] = tensors
             tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
