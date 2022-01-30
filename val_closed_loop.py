@@ -219,13 +219,13 @@ def val_closed_loop(opt,
     (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
     (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
     (save_dir / 'report').mkdir(parents=True, exist_ok=True)
-    result_dir = (save_dir / 'result').mkdir(parents=True, exist_ok=True)
+    (save_dir / 'plots').mkdir(parents=True, exist_ok=True)
 
     to_be_coded_full_name = (save_dir / 'to_be_coded' / video).with_suffix('.yuv')
     predicted_full_name = (save_dir / 'predicted' / video).with_suffix('.yuv')
     reconstructed_full_name = (save_dir / 'reconstructed' / video).with_suffix('.yuv')
     report_file_name = (save_dir / 'report' / video).with_suffix('.txt')
-    result_dir = (save_dir / 'result')
+    plot_dir = (save_dir / 'plots')
 
     assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before'
 
@@ -364,31 +364,31 @@ def val_closed_loop(opt,
     pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
     LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
     # Save results
-    file = (result_dir / f'result_{video}').with_suffix('.csv')
-    s = '' if file.exists() else (('%40s,' + '%20s,' * 5) % ('video', 'Bit-rate (kb/s)', 'mAP@.5 (%)', 'mAP@.5:.95 (%)', 'P', 'R')) + '\n'  # add header
+    file = (save_dir / f'result_{video_name}').with_suffix('.csv')
+    s = '' if file.exists() else (('%20s,' * 6) % ('QP', 'Bit-rate (kb/s)', 'mAP@.5 (%)', 'mAP@.5:.95 (%)', 'P', 'R')) + '\n'  # add header
     with open(file, 'a') as f:
-        f.write(s + (('%40s,' + '%20.5g,' * 5) % (video, bit_rate, map50*100, map*100, mp, mr)) + '\n')
+        f.write(s + (('%20.5g,' * 6) % (opt.qp, bit_rate, map50*100, map*100, mp, mr)) + '\n')
     
     # if opt.track_stats:
     #     stats_bottleneck.output_stats(save_dir)
         
     # Print results per class
     if (opt.verbose or nc<50) and nc > 1 and len(stats):
-        file = (result_dir / f'res_per_class_{video}').with_suffix('.csv')
-        s = '' if file.exists() else (('%20s,' * 7) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')) + '\n'  # add header
+        file = (save_dir / f'res_per_class_{video_name}').with_suffix('.csv')
+        s = '' if file.exists() else (('%20s,' * 8) % ('QP', 'Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')) + '\n'  # add header
         with open(file, 'a') as f:
-            f.write(s + (('%20s,' + '%20.5g,' * 6) % ('all', seen, nt.sum(), mp, mr, map50, map)) + '\n')
+            f.write(s + (('%20.5g,' + '%20s,' + '%20.5g,' * 6) % (opt.qp, 'all', seen, nt.sum(), mp, mr, map50, map)) + '\n')
             for i, c in enumerate(ap_class):
                 LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
-                f.write(('%20s,' + '%20.5g,' * 6) % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]) + '\n')
+                f.write(('%20.5g,' + '%20s,' + '%20.5g,' * 6) % (opt.qp, names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]) + '\n')
 
     plt.plot(Byte_num_seq)
     plt.xlabel('frame number')
     plt.ylabel('frame size (kB)')
     plt.title(video)
-    plt.savefig(str(save_dir / f'rate_fig_{video}.png'))
-    print(f'bit rate (kb/s) <{video}> = {bit_rate:.2f}')
-    print(f'size of the compressed file (kB) <{video}> = {sum(Byte_num_seq):.2f}')
+    plt.savefig(str(plot_dir / f'rate_fig_{video}.png'))
+    print(f'\nbit rate (kb/s) <{video}> = {bit_rate:.2f}')
+    print(f'size of the compressed file (kB) <{video}> = {sum(Byte_num_seq):.2f}\n')
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
@@ -429,7 +429,7 @@ def val_closed_loop(opt,
     # Return results
     model.float()  # for training
     s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if opt.save_txt else ''
-    LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
+    LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}\n")
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
@@ -490,7 +490,8 @@ def main(opt):
 
     # Directories
     opt.data, opt.weights, opt.project = check_file(opt.data), str(opt.weights), str(opt.project)  # checks
-    save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)  # increment run
+    # save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)  # increment run
+    save_dir = (Path(opt.project) / opt.name)  # increment run
     (save_dir / 'labels' if opt.save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
     opt.save_dir = str(save_dir)
 
