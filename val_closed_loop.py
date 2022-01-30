@@ -227,7 +227,7 @@ def val_closed_loop(opt,
     report_file_name = (save_dir / 'report' / video).with_suffix('.txt')
     result_dir = (save_dir / 'result')
 
-    # assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before'
+    assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before'
 
     full_to_be_coded_frame_f = to_be_coded_full_name.open('ab')
     full_predicted_f = predicted_full_name.open('ab')
