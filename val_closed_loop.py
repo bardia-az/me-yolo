@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 from threading import Thread
+import yaml
 
 import numpy as np
 import torch
@@ -30,7 +31,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 from models.experimental import attempt_load
 from models.supplemental import AutoEncoder, MotionEstimation
 from utils.datasets import create_dataloader
-from utils.general import (LOGGER, StatCalculator, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
+from utils.general import (LOGGER, StatCalculator, check_file, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
                            scale_coords, xywh2xyxy, xyxy2xywh, print_args_to_file)
 from utils.metrics import ap_per_class, ConfusionMatrix
@@ -100,7 +101,7 @@ def get_tensors(img, model, autoencoder):
     return T_bottleneck
 
 def motion_estimation(ref_tensors, model):
-    ref_num, ch_num, ch_h, ch_w = ref_tensors.shape
+    _, _, ch_h, ch_w = ref_tensors.shape
     # T_in = torch.zeros((ch_num*2, ch_w, ch_h))
     # T_in[0,:,:,:] = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
     T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
@@ -130,7 +131,7 @@ def encode_frame(data, tensors_w, tensors_h, txt_file, opt):
     to_be_coded_file = 'working_dir/to_be_coded_frame.yuv'
     with open(to_be_coded_file, 'wb') as f:
         f.write(data)
-    subprocess.call(VVC_command, stdout=txt_file)
+    # subprocess.call(VVC_command, stdout=txt_file)
     Byte_num = os.path.getsize('working_dir/bitstream.bin')/1024.0
     tmp_reconst = read_y_channel('working_dir/reconst.yuv', tensors_w, tensors_h)
     return tmp_reconst, Byte_num
@@ -150,6 +151,9 @@ def val_closed_loop(opt,
         Path(opt.save_dir), opt.batch_size, opt.weights, opt.single_cls, opt.data, opt.supp_weights, opt.half, opt.weights_me, False, \
         opt.tensors_w, opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max
 
+    with open(save_dir / 'opt.yaml', 'w') as f:
+        yaml.safe_dump(vars(opt), f, sort_keys=False)
+
     device = select_device(opt.device, batch_size=batch_size)
 
     # Load model
@@ -163,9 +167,6 @@ def val_closed_loop(opt,
     video_name = data.split('/')[-1].split('.')[0]
     video = f'{video_name}_QP{opt.qp}'
     data = check_dataset(data)  # check
-
-    result_f = Path(save_dir / f'result_{video}').with_suffix('.txt')
-    print_args_to_file(opt, result_f)
 
     # Half
     half &= device.type != 'cpu'  # half precision only supported on CUDA
@@ -224,18 +225,20 @@ def val_closed_loop(opt,
     (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
     (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
     (save_dir / 'report').mkdir(parents=True, exist_ok=True)
+    result_dir = (save_dir / 'result').mkdir(parents=True, exist_ok=True)
 
     to_be_coded_full_name = (save_dir / 'to_be_coded' / video).with_suffix('.yuv')
     predicted_full_name = (save_dir / 'predicted' / video).with_suffix('.yuv')
     reconstructed_full_name = (save_dir / 'reconstructed' / video).with_suffix('.yuv')
-    txt_file_name = (save_dir / 'report' / video).with_suffix('.txt')
+    report_file_name = (save_dir / 'report' / video).with_suffix('.txt')
+    result_dir = (save_dir / 'result')
 
     # assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before'
 
     full_to_be_coded_frame_f = to_be_coded_full_name.open('ab')
     full_predicted_f = predicted_full_name.open('ab')
     reconst_video_f = reconstructed_full_name.open('ab')
-    txt_file = txt_file_name.open('a')
+    report_file = report_file_name.open('a')
 
     ref_num = 2
     ch_w, ch_h = 128, 128
@@ -260,7 +263,7 @@ def val_closed_loop(opt,
             tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
             to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
             full_to_be_coded_frame_f.write(to_be_coded_frame_data)
-            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, txt_file, opt)
+            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, opt)
             Byte_num_seq.append(Byte_num)
             reconst_video_f.write(tmp_reconst.flatten())
             tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
@@ -277,20 +280,21 @@ def val_closed_loop(opt,
             tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
             to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
             full_to_be_coded_frame_f.write(to_be_coded_frame_data)
-            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, txt_file, opt)
+            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, opt)
             Byte_num_seq.append(Byte_num)
             tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
             tiled_res = tiled_res.half() if half else tiled_res.float()
             residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
             tensors = residual + pred_tensors[0,:,:,:]
-            tiled_tensors = tensors_to_tiled(tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
-            reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
             ref_tensors = torch.roll(ref_tensors, -1, 0)
             ref_tensors[ref_num-1,:,:,:] = tensors
+            out = get_yolo_prediction(tensors[None, :], autoencoder, model)
+            # # for logging video data
+            tiled_tensors = tensors_to_tiled(tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
+            reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
             tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
             pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
             full_predicted_f.write(pred_data)
-            out = get_yolo_prediction(tensors[None, :], autoencoder, model)
 
             # if track_stats:
             #     stats_bottleneck.update_stats(T_bottleneck.detach().clone().cpu().numpy())
@@ -360,23 +364,37 @@ def val_closed_loop(opt,
     else:
         nt = torch.zeros(1)
 
-    # Print results
-    s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
+    bit_rate = sum(Byte_num_seq) * 8 * opt.frame_rate / len(video_sequence)
+
+    # Print results   
     pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
     LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
-    with open(save_dir / 'result.txt', 'a') as f:
-        f.write('\n\n' + s + '\n')
-        f.write(pf % ('all', seen, nt.sum(), mp, mr, map50*100, map*100) + '\n')
+    # Save results
+    file = (result_dir / f'result_{video}').with_suffix('.csv')
+    s = '' if file.exists() else (('%40s,' + '%20s,' * 5) % ('video', 'Bit-rate (kb/s)', 'mAP@.5 (%)', 'mAP@.5:.95 (%)', 'P', 'R')) + '\n'  # add header
+    with open(file, 'a') as f:
+        f.write(s + (('%40s,' + '%20.5g,' * 5) % (video, bit_rate, map50*100, map*100, mp, mr)) + '\n')
+
+    plt.plot(Byte_num_seq)
+    plt.xlabel('frame number')
+    plt.ylabel('frame size (kB)')
+    plt.title(video)
+    plt.savefig(str(save_dir / f'rate_fig_{video}.png'))
+    print(f'bit rate (kb/s) <{video}> = {bit_rate:.2f}')
+    print(f'size of the compressed file (kB) <{video}> = {sum(Byte_num_seq):.2f}')
     
     # if opt.track_stats:
     #     stats_bottleneck.output_stats(save_dir)
         
     # Print results per class
     if (opt.verbose or nc<50) and nc > 1 and len(stats):
-        for i, c in enumerate(ap_class):
-            LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
-            with open(save_dir / 'result.txt', 'a') as f:
-                f.write(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]) + '\n')
+        file = (result_dir / f'res_per_class_{video}').with_suffix('.csv')
+        s = '' if file.exists() else (('%20s,' * 7) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')) + '\n'  # add header
+        with open(file, 'a') as f:
+            f.write(s + (('%20s,' + '%20.5g,' * 6) % ('all', seen, nt.sum(), mp, mr, map50, map)) + '\n')
+            for i, c in enumerate(ap_class):
+                LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+                f.write(('%20s,' + '%20.5g,' * 6) % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]) + '\n')
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
@@ -427,7 +445,7 @@ def val_closed_loop(opt,
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
-    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov5s.pt', help='model.pt path(s)')
+    parser.add_argument('--weights', type=str, default=ROOT / 'yolov5s.pt', help='model.pt path(s)')
     parser.add_argument('--batch-size', type=int, default=1, help='batch size')
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
@@ -478,9 +496,10 @@ def main(opt):
     check_requirements(requirements=ROOT / 'requirements.txt', exclude=('tensorboard', 'thop'))
 
     # Directories
+    opt.data, opt.weights, opt.project = check_file(opt.data), str(opt.weights), str(opt.project)  # checks
     save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)  # increment run
     (save_dir / 'labels' if opt.save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
-    opt.save_dir = save_dir
+    opt.save_dir = str(save_dir)
 
     val_closed_loop(opt)
 
