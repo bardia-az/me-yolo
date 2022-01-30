@@ -13,6 +13,8 @@ train: class_a_PeopleOnStreet.txt  # train images (relative to 'path')
 val: class_a_PeopleOnStreet.txt  # train images (relative to 'path')
 test:
 
+frame_rate: 30
+
 # Classes
 nc: 80  # number of classes
 names: ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',

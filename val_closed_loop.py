@@ -91,8 +91,6 @@ def read_y_channel(file_name, w, h):
         raw = f.read(w*h)
         raw = np.frombuffer(raw, dtype=np.uint8)
         raw = raw.reshape((h,w))
-        # raw = raw / 255.0
-        # raw = raw.astype('float32')
     return raw
 
 def get_tensors(img, model, autoencoder):
@@ -102,8 +100,6 @@ def get_tensors(img, model, autoencoder):
 
 def motion_estimation(ref_tensors, model):
     _, _, ch_h, ch_w = ref_tensors.shape
-    # T_in = torch.zeros((ch_num*2, ch_w, ch_h))
-    # T_in[0,:,:,:] = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
     T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
     return model(T_in[None, :])
 
@@ -125,20 +121,20 @@ def tiled_to_tensor(tiled, ch_w, ch_h, tensors_min, tensors_max):
     tensor = tiled.swapaxes(1,2).reshape((-1, ch_h, ch_w))
     return tensor
 
-def encode_frame(data, tensors_w, tensors_h, txt_file, opt):
+def encode_frame(data, tensors_w, tensors_h, txt_file, frame_rate, qp):
     VVC_command = ['working_dir/vvencFFapp', '-c', 'working_dir/lowdelay_faster.cfg', '-i', 'working_dir/to_be_coded_frame.yuv', '-b', 'working_dir/bitstream.bin', 
-                   '-o', 'working_dir/reconst.yuv', '--SourceWidth', str(tensors_w), '--SourceHeight', str(tensors_h), '-f', '1', '-fr', str(opt.frame_rate), '-q', str(opt.qp)]
+                   '-o', 'working_dir/reconst.yuv', '--SourceWidth', str(tensors_w), '--SourceHeight', str(tensors_h), '-f', '1', '-fr', str(frame_rate), '-q', str(qp)]
     to_be_coded_file = 'working_dir/to_be_coded_frame.yuv'
     with open(to_be_coded_file, 'wb') as f:
         f.write(data)
-    # subprocess.call(VVC_command, stdout=txt_file)
+    subprocess.call(VVC_command, stdout=txt_file)
     Byte_num = os.path.getsize('working_dir/bitstream.bin')/1024.0
     tmp_reconst = read_y_channel('working_dir/reconst.yuv', tensors_w, tensors_h)
     return tmp_reconst, Byte_num
 
 def get_yolo_prediction(T, autoencoder, model):
     T_hat = autoencoder(T, task='dec', bottleneck=T)
-    out, train_out = model(None, cut_model=2, T=T_hat)  # second half of the model
+    out, _ = model(None, cut_model=2, T=T_hat)  # second half of the model
     return out
 
 
@@ -219,8 +215,6 @@ def val_closed_loop(opt,
 
     # stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
 
-    
-    
     (save_dir / 'to_be_coded').mkdir(parents=True, exist_ok=True)
     (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
     (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
@@ -244,7 +238,7 @@ def val_closed_loop(opt,
     ch_w, ch_h = 128, 128
     ch_num_w, ch_num_h = (tensors_w//ch_w), (tensors_h//ch_h)
     ch_num = ch_num_w * ch_num_h
-    ref_tensors = torch.zeros((ref_num, ch_num, ch_w, ch_h), device=device)
+    ref_tensors = torch.zeros((ref_num, ch_num, ch_w, ch_h), device=device, dtype=torch.half if half else torch.float)
     Byte_num_seq = []
 
     for fr, (img, targets, paths, shapes) in enumerate(tqdm(video_sequence, desc=s)):
@@ -263,7 +257,7 @@ def val_closed_loop(opt,
             tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
             to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
             full_to_be_coded_frame_f.write(to_be_coded_frame_data)
-            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, opt)
+            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
             Byte_num_seq.append(Byte_num)
             reconst_video_f.write(tmp_reconst.flatten())
             tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
@@ -280,7 +274,7 @@ def val_closed_loop(opt,
             tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
             to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
             full_to_be_coded_frame_f.write(to_be_coded_frame_data)
-            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, opt)
+            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
             Byte_num_seq.append(Byte_num)
             tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
             tiled_res = tiled_res.half() if half else tiled_res.float()
@@ -364,7 +358,7 @@ def val_closed_loop(opt,
     else:
         nt = torch.zeros(1)
 
-    bit_rate = sum(Byte_num_seq) * 8 * opt.frame_rate / len(video_sequence)
+    bit_rate = sum(Byte_num_seq) * 8 * data['frame_rate'] / len(video_sequence)
 
     # Print results   
     pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
@@ -374,14 +368,6 @@ def val_closed_loop(opt,
     s = '' if file.exists() else (('%40s,' + '%20s,' * 5) % ('video', 'Bit-rate (kb/s)', 'mAP@.5 (%)', 'mAP@.5:.95 (%)', 'P', 'R')) + '\n'  # add header
     with open(file, 'a') as f:
         f.write(s + (('%40s,' + '%20.5g,' * 5) % (video, bit_rate, map50*100, map*100, mp, mr)) + '\n')
-
-    plt.plot(Byte_num_seq)
-    plt.xlabel('frame number')
-    plt.ylabel('frame size (kB)')
-    plt.title(video)
-    plt.savefig(str(save_dir / f'rate_fig_{video}.png'))
-    print(f'bit rate (kb/s) <{video}> = {bit_rate:.2f}')
-    print(f'size of the compressed file (kB) <{video}> = {sum(Byte_num_seq):.2f}')
     
     # if opt.track_stats:
     #     stats_bottleneck.output_stats(save_dir)
@@ -395,6 +381,14 @@ def val_closed_loop(opt,
             for i, c in enumerate(ap_class):
                 LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
                 f.write(('%20s,' + '%20.5g,' * 6) % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]) + '\n')
+
+    plt.plot(Byte_num_seq)
+    plt.xlabel('frame number')
+    plt.ylabel('frame size (kB)')
+    plt.title(video)
+    plt.savefig(str(save_dir / f'rate_fig_{video}.png'))
+    print(f'bit rate (kb/s) <{video}> = {bit_rate:.2f}')
+    print(f'size of the compressed file (kB) <{video}> = {sum(Byte_num_seq):.2f}')
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
@@ -475,7 +469,6 @@ def parse_opt():
     parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
     parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
     parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
-    parser.add_argument('--frame-rate', type=int, default=50, help='frame-rate for the vvc encoder')
     parser.add_argument('--qp', type=int, default=24, help='QP for the vvc encoder')
     parser.add_argument('--tensors-w', type=int, default=1024, help='width of the tiled tensor frames')
     parser.add_argument('--tensors-h', type=int, default=1024, help='height of the tiled tensor frames')
