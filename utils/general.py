@@ -890,23 +890,23 @@ class StatCalculator:
         # self.n += n2
         self.n += 1
 
-    def output_stats(self, save_dir):
+    def output_stats(self, save_dir, name=''):
         s = ('%11s'*5 + '%20s' * 2) % ('vmin', 'vmax', 'mean', 'var', 'std', 'std range', '3std range')
         pf = '%11.4f' * 5 + '%20s' * 2  # print format
-        with open(save_dir / 'result.txt', 'a') as f:
+        with open(save_dir / f'stats_{name}.txt', 'a') as f:
             f.write('\n\n' + s + '\n')
             f.write(pf % (self.vmin, self.vmax, self.mean, self.var, self.std, f'[{self.mean-self.std:.4f}, {self.mean+self.std:.4f}]', f'[{self.mean-3*self.std:.4f}, {self.mean+3*self.std:.4f}]') + '\n')
 
         self.hist /= self.n
         # plt.bar(self.bin_edges[:-1], self.hist)
-        plt.plot(self.bin_edges[:-1], self.hist, label='distribution')
+        plt.plot(self.bin_edges[:-1], self.hist, label='distribution', linewidth=0.5)
         plt.axvline(self.mean, 0, max(self.hist), c='r', ls='--', lw=0.75, label='mean')
         plt.axvline(self.mean-3*self.std, 0, max(self.hist), c='g', lw=0.5, label='3*sigma range')
         plt.axvline(self.mean+3*self.std, 0, max(self.hist), c='g', lw=0.5)
         plt.ylim(bottom=0)
-        plt.xticks(np.arange(self.range[0], self.range[1], step=0.1))
+        plt.xticks(np.arange(self.range[0], self.range[1], step=0.2), fontsize=2)
         plt.legend()
-        plt.savefig(save_dir / 'histogram.png', dpi=300, bbox_inches='tight')
+        plt.savefig(save_dir / f'histogram_{name}.png', dpi=300, bbox_inches='tight')
         plt.close()
 
 

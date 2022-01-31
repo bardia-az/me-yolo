@@ -143,9 +143,9 @@ def get_yolo_prediction(T, autoencoder, model):
 def val_closed_loop(opt,
                     callbacks=Callbacks()):
 
-    save_dir, batch_size, weights, single_cls, data, supp_weights, half, weights_me, plots, tensors_w, tensors_h, tensors_min, tensors_max, res_min, res_max = \
+    save_dir, batch_size, weights, single_cls, data, supp_weights, half, weights_me, plots, tensors_w, tensors_h, tensors_min, tensors_max, res_min, res_max, save_videos, track_stats = \
         Path(opt.save_dir), opt.batch_size, opt.weights, opt.single_cls, opt.data, opt.supp_weights, opt.half, opt.weights_me, False, \
-        opt.tensors_w, opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max
+        opt.tensors_w, opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max, opt.save_videos, opt.track_stats
 
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.safe_dump(vars(opt), f, sort_keys=False)
@@ -213,25 +213,31 @@ def val_closed_loop(opt,
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
 
-    # stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
+    stats_error = StatCalculator(opt.dist_range, opt.bins) if track_stats else None
 
-    (save_dir / 'to_be_coded').mkdir(parents=True, exist_ok=True)
-    (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
-    (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
+    if save_videos:
+        (save_dir / 'to_be_coded').mkdir(parents=True, exist_ok=True)
+        (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
+        (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
+        to_be_coded_full_name = (save_dir / 'to_be_coded' / video).with_suffix('.yuv')
+        predicted_full_name = (save_dir / 'predicted' / video).with_suffix('.yuv')
+        reconstructed_full_name = (save_dir / 'reconstructed' / video).with_suffix('.yuv')
+
+    if track_stats:
+        (save_dir / 'error_stats').mkdir(parents=True, exist_ok=True)
+        error_dir = (save_dir / 'error_stats')
+
     (save_dir / 'report').mkdir(parents=True, exist_ok=True)
     (save_dir / 'plots').mkdir(parents=True, exist_ok=True)
-
-    to_be_coded_full_name = (save_dir / 'to_be_coded' / video).with_suffix('.yuv')
-    predicted_full_name = (save_dir / 'predicted' / video).with_suffix('.yuv')
-    reconstructed_full_name = (save_dir / 'reconstructed' / video).with_suffix('.yuv')
     report_file_name = (save_dir / 'report' / video).with_suffix('.txt')
     plot_dir = (save_dir / 'plots')
 
-    assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before'
+    if save_videos:
+        assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before. Videos are already available.'
 
-    full_to_be_coded_frame_f = to_be_coded_full_name.open('ab')
-    full_predicted_f = predicted_full_name.open('ab')
-    reconst_video_f = reconstructed_full_name.open('ab')
+    full_to_be_coded_frame_f = to_be_coded_full_name.open('ab') if save_videos else None
+    full_predicted_f = predicted_full_name.open('ab') if save_videos else None
+    reconst_video_f = reconstructed_full_name.open('ab') if save_videos else None
     report_file = report_file_name.open('a')
 
     ref_num = 2
@@ -256,15 +262,16 @@ def val_closed_loop(opt,
         if fr < ref_num:
             tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
             to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
-            full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+            if save_videos:
+                full_to_be_coded_frame_f.write(to_be_coded_frame_data)
             tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
             Byte_num_seq.append(Byte_num)
-            reconst_video_f.write(tmp_reconst.flatten())
+            if save_videos:
+                reconst_video_f.write(tmp_reconst.flatten())
             tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
             tiled_tensors = tiled_tensors.half() if half else tiled_tensors.float()
-            tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
-            ref_tensors[fr,:,:,:] = tensors
-            out = get_yolo_prediction(tensors[None, :], autoencoder, model)
+            rec_tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
+            ref_tensors[fr,:,:,:] = rec_tensors
             # plt.imshow(ref_tensors[0].reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
             # err = tensors1[0] - ref_tensors[fr,:,:,:]
             # plt.imshow(err.reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
@@ -273,25 +280,29 @@ def val_closed_loop(opt,
             residual = tensors - pred_tensors
             tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
             to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
-            full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+            if save_videos:
+                full_to_be_coded_frame_f.write(to_be_coded_frame_data)
             tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
             Byte_num_seq.append(Byte_num)
             tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
             tiled_res = tiled_res.half() if half else tiled_res.float()
             residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
-            tensors = residual + pred_tensors[0,:,:,:]
+            rec_tensors = residual + pred_tensors[0,:,:,:]
             ref_tensors = torch.roll(ref_tensors, -1, 0)
-            ref_tensors[ref_num-1,:,:,:] = tensors
-            out = get_yolo_prediction(tensors[None, :], autoencoder, model)
-            # # for logging video data
-            tiled_tensors = tensors_to_tiled(tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
-            reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
-            tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
-            pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
-            full_predicted_f.write(pred_data)
+            ref_tensors[ref_num-1,:,:,:] = rec_tensors
+            
+            # # for logging video 
+            if save_videos:
+                tiled_tensors = tensors_to_tiled(rec_tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
+                reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
+                tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
+                full_predicted_f.write(pred_data)
 
-            # if track_stats:
-            #     stats_bottleneck.update_stats(T_bottleneck.detach().clone().cpu().numpy())
+        out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
+        if track_stats:
+            error = rec_tensors - tensors[0]
+            stats_error.update_stats(error.detach().clone().cpu().numpy())
 
 
         dt[1] += time_sync() - t2
@@ -348,6 +359,11 @@ def val_closed_loop(opt,
             f = save_dir / f'val_batch{fr}_pred.jpg'  # predictions
             Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
 
+    if save_videos:
+        full_to_be_coded_frame_f.close()
+        full_predicted_f.close()
+        reconst_video_f.close()
+    
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     if len(stats) and stats[0].any():
@@ -369,8 +385,8 @@ def val_closed_loop(opt,
     with open(file, 'a') as f:
         f.write(s + (('%20.5g,' * 6) % (opt.qp, bit_rate, map50*100, map*100, mp, mr)) + '\n')
     
-    # if opt.track_stats:
-    #     stats_bottleneck.output_stats(save_dir)
+    if opt.track_stats:
+        stats_error.output_stats(error_dir, video)
         
     # Print results per class
     if (opt.verbose or nc<50) and nc > 1 and len(stats):
@@ -466,16 +482,17 @@ def parse_opt():
     parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--weights-me', type=str, default=None, help='initial weights path for the autoencoder')
-    parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
-    parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
+    parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the error')
+    parser.add_argument('--dist-range',  type=float, nargs='*', default=[-4,4], help='the range of the distribution')
     parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
     parser.add_argument('--qp', type=int, default=24, help='QP for the vvc encoder')
     parser.add_argument('--tensors-w', type=int, default=1024, help='width of the tiled tensor frames')
     parser.add_argument('--tensors-h', type=int, default=1024, help='height of the tiled tensor frames')
-    parser.add_argument('--tensors-min', type=float, default=-0.2, help='the clipping lower bound for the intermediate tensors')
-    parser.add_argument('--tensors-max', type=float, default=6, help='the clipping upper bound for the intermediate tensors')
-    parser.add_argument('--res-min', type=float, default=-6, help='the clipping lower bound for the residuals')
-    parser.add_argument('--res-max', type=float, default=6, help='the clipping upper bound for the residuals')
+    parser.add_argument('--tensors-min', type=float, default=-0.2786, help='the clipping lower bound for the intermediate tensors')
+    parser.add_argument('--tensors-max', type=float, default=1.4, help='the clipping upper bound for the intermediate tensors')
+    parser.add_argument('--res-min', type=float, default=-1, help='the clipping lower bound for the residuals')
+    parser.add_argument('--res-max', type=float, default=1, help='the clipping upper bound for the residuals')
+    parser.add_argument('--save-videos', action='store_true', help='save the predicted, to-be-coded, and reconstructed videos')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
