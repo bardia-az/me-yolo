@@ -112,6 +112,7 @@ def run(data,
         track_stats=False,
         dist_range=[-10,14],
         bins=10000,
+        data_suffix='',
         model=None,
         dataloader=None,
         save_dir=Path(''),
@@ -146,7 +147,7 @@ def run(data,
         #     model = nn.DataParallel(model)
 
         # Data
-        data = check_dataset(data)  # check
+        data = check_dataset(data, suffix=data_suffix)  # check
 
     # Half
     half &= device.type != 'cpu'  # half precision only supported on CUDA
@@ -441,6 +442,7 @@ def parse_opt():
     parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
     parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
     parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
+    parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML

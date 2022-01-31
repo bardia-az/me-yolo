@@ -364,7 +364,7 @@ def check_file(file, suffix=''):
         return files[0]  # return file
 
 
-def check_dataset(data, autodownload=True):
+def check_dataset(data, autodownload=True, suffix=''):
     # Download and/or unzip dataset if not found locally
     # Usage: https://github.com/ultralytics/yolov5/releases/download/v1.0/coco128_with_yaml.zip
 
@@ -381,7 +381,7 @@ def check_dataset(data, autodownload=True):
             data = yaml.safe_load(f)  # dictionary
 
     # Parse yaml
-    path = extract_dir or Path(data.get('path') or '')  # optional 'path' default to '.'
+    path = extract_dir or Path(data.get('path')+suffix or '')  # optional 'path' default to '.'
     for k in 'train', 'val', 'test':
         if data.get(k):  # prepend path
             data[k] = str(path / data[k]) if isinstance(data[k], str) else [str(path / x) for x in data[k]]
