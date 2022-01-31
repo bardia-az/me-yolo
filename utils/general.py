@@ -904,6 +904,7 @@ class StatCalculator:
         plt.axvline(self.mean-3*self.std, 0, max(self.hist), c='g', lw=0.5, label='3*sigma range')
         plt.axvline(self.mean+3*self.std, 0, max(self.hist), c='g', lw=0.5)
         plt.ylim(bottom=0)
+        plt.xticks(np.arange(self.range[0], self.range[1], step=0.1))
         plt.legend()
         plt.savefig(save_dir / 'histogram.png', dpi=300, bbox_inches='tight')
         plt.close()
