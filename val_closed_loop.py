@@ -127,7 +127,7 @@ def encode_frame(data, tensors_w, tensors_h, txt_file, frame_rate, qp):
     to_be_coded_file = 'working_dir/to_be_coded_frame.yuv'
     with open(to_be_coded_file, 'wb') as f:
         f.write(data)
-    # subprocess.call(VVC_command, stdout=txt_file)
+    subprocess.call(VVC_command, stdout=txt_file)
     Byte_num = os.path.getsize('working_dir/bitstream.bin')/1024.0
     tmp_reconst = read_y_channel('working_dir/reconst.yuv', tensors_w, tensors_h)
     return tmp_reconst, Byte_num
@@ -236,8 +236,8 @@ def val_closed_loop(opt,
     report_file_name = (save_dir / 'report' / video).with_suffix('.txt')
     plot_dir = (save_dir / 'plots')
 
-    # if save_videos:
-    #     assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before. Videos are already available.'
+    if save_videos:
+        assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before. Videos are already available.'
 
     full_to_be_coded_frame_f = to_be_coded_full_name.open('ab') if save_videos else None
     full_predicted_f = predicted_full_name.open('ab') if save_videos else None
