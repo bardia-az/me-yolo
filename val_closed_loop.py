@@ -127,7 +127,7 @@ def encode_frame(data, tensors_w, tensors_h, txt_file, frame_rate, qp):
     to_be_coded_file = 'working_dir/to_be_coded_frame.yuv'
     with open(to_be_coded_file, 'wb') as f:
         f.write(data)
-    subprocess.call(VVC_command, stdout=txt_file)
+    # subprocess.call(VVC_command, stdout=txt_file)
     Byte_num = os.path.getsize('working_dir/bitstream.bin')/1024.0
     tmp_reconst = read_y_channel('working_dir/reconst.yuv', tensors_w, tensors_h)
     return tmp_reconst, Byte_num
@@ -219,9 +219,13 @@ def val_closed_loop(opt,
         (save_dir / 'to_be_coded').mkdir(parents=True, exist_ok=True)
         (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
         (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
-        to_be_coded_full_name = (save_dir / 'to_be_coded' / video).with_suffix('.yuv')
-        predicted_full_name = (save_dir / 'predicted' / video).with_suffix('.yuv')
-        reconstructed_full_name = (save_dir / 'reconstructed' / video).with_suffix('.yuv')
+        (save_dir / 'original').mkdir(parents=True, exist_ok=True)
+        (save_dir / 'error').mkdir(parents=True, exist_ok=True)
+        to_be_coded_full_name = (save_dir / 'to_be_coded' / f'to_be_coded_{video}').with_suffix('.yuv')
+        predicted_full_name = (save_dir / 'predicted' / f'predicted_{video}').with_suffix('.yuv')
+        reconstructed_full_name = (save_dir / 'reconstructed' / f'reconstructed_{video}').with_suffix('.yuv')
+        original_full_name = (save_dir / 'original' / f'original_{video}').with_suffix('.yuv')
+        error_full_name = (save_dir / 'error' / f'error_{video}').with_suffix('.yuv')
 
     if track_stats:
         (save_dir / 'error_stats').mkdir(parents=True, exist_ok=True)
@@ -232,12 +236,14 @@ def val_closed_loop(opt,
     report_file_name = (save_dir / 'report' / video).with_suffix('.txt')
     plot_dir = (save_dir / 'plots')
 
-    if save_videos:
-        assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before. Videos are already available.'
+    # if save_videos:
+    #     assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before. Videos are already available.'
 
     full_to_be_coded_frame_f = to_be_coded_full_name.open('ab') if save_videos else None
     full_predicted_f = predicted_full_name.open('ab') if save_videos else None
     reconst_video_f = reconstructed_full_name.open('ab') if save_videos else None
+    original_full_f = original_full_name.open('ab') if save_videos else None
+    error_full_f = error_full_name.open('ab') if save_videos else None
     report_file = report_file_name.open('a')
 
     ref_num = 2
@@ -264,6 +270,7 @@ def val_closed_loop(opt,
             to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
             if save_videos:
                 full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+                original_full_f.write(to_be_coded_frame_data)
             tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
             Byte_num_seq.append(Byte_num)
             if save_videos:
@@ -281,6 +288,9 @@ def val_closed_loop(opt,
             tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
             to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
             if save_videos:
+                tiled_orig = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                orig_data = tiled_orig.cpu().numpy().flatten().astype(np.uint8)
+                original_full_f.write(orig_data)
                 full_to_be_coded_frame_f.write(to_be_coded_frame_data)
             tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
             Byte_num_seq.append(Byte_num)
@@ -299,10 +309,14 @@ def val_closed_loop(opt,
                 pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
                 full_predicted_f.write(pred_data)
 
+        error = rec_tensors - tensors[0]
         out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
         if track_stats:
-            error = rec_tensors - tensors[0]
             stats_error.update_stats(error.detach().clone().cpu().numpy())
+        if save_videos:
+            tiled_error = tensors_to_tiled(error[None, :], tensors_w, tensors_h, res_min, res_max)
+            error_data = tiled_error.cpu().numpy().flatten().astype(np.uint8)
+            error_full_f.write(error_data)
 
 
         dt[1] += time_sync() - t2
@@ -363,6 +377,8 @@ def val_closed_loop(opt,
         full_to_be_coded_frame_f.close()
         full_predicted_f.close()
         reconst_video_f.close()
+        original_full_f.close()
+        error_full_f.close()
     
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
