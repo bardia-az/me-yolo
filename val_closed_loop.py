@@ -162,7 +162,7 @@ def val_closed_loop(opt,
     # Data
     video_name = data.split('/')[-1].split('.')[0]
     video = f'{video_name}_QP{opt.qp}'
-    data = check_dataset(data)  # check
+    data = check_dataset(data, suffix=opt.data_suffix)  # check
 
     # Half
     half &= device.type != 'cpu'  # half precision only supported on CUDA
@@ -199,9 +199,9 @@ def val_closed_loop(opt,
     # Dataloader
     if device.type != 'cpu':
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-    pad = 0.5
+    pad = 0.0
     task = 'val'
-    video_sequence = create_dataloader(data[task], imgsz, batch_size, gs, single_cls, pad=pad, rect=False, rect_img=True,
+    video_sequence = create_dataloader(data[task], imgsz, batch_size, gs, single_cls, pad=pad, rect=True, rect_img=False,
                                        prefix=colorstr(f'{task}: '))[0]
 
     seen = 0
@@ -284,6 +284,7 @@ def val_closed_loop(opt,
             # plt.imshow(err.reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
         else:
             pred_tensors = motion_estimation(ref_tensors, motion_estimator)
+            # pred_tensors = tensors
             residual = tensors - pred_tensors
             tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
             to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
@@ -311,6 +312,7 @@ def val_closed_loop(opt,
 
         error = rec_tensors - tensors[0]
         out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
+        # out = get_yolo_prediction(tensors, autoencoder, model)
         if track_stats:
             stats_error.update_stats(error.detach().clone().cpu().numpy())
         if save_videos:
@@ -509,6 +511,7 @@ def parse_opt():
     parser.add_argument('--res-min', type=float, default=-1, help='the clipping lower bound for the residuals')
     parser.add_argument('--res-max', type=float, default=1, help='the clipping upper bound for the residuals')
     parser.add_argument('--save-videos', action='store_true', help='save the predicted, to-be-coded, and reconstructed videos')
+    parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
