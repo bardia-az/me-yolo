@@ -246,6 +246,7 @@ def val_closed_loop(opt,
     error_full_f = error_full_name.open('ab') if save_videos else None
     report_file = report_file_name.open('a')
 
+    optimal_qp_for_I_frames = 28
     ref_num = 2
     ch_w, ch_h = 128, 128
     ch_num_w, ch_num_h = (tensors_w//ch_w), (tensors_h//ch_h)
@@ -271,7 +272,7 @@ def val_closed_loop(opt,
             if save_videos:
                 full_to_be_coded_frame_f.write(to_be_coded_frame_data)
                 original_full_f.write(to_be_coded_frame_data)
-            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
+            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp if opt.qp < optimal_qp_for_I_frames else optimal_qp_for_I_frames)
             Byte_num_seq.append(Byte_num)
             if save_videos:
                 reconst_video_f.write(tmp_reconst.flatten())
