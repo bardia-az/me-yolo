@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+from enum import auto
 import json
 import os
 import sys
@@ -93,10 +94,19 @@ def read_y_channel(file_name, w, h):
         raw = raw.reshape((h,w))
     return raw
 
-def get_tensors(img, model, autoencoder):
-    T = model(img, cut_model=1)  # first half of the model
-    T_bottleneck = autoencoder(T, task='enc')
-    return T_bottleneck
+def get_tensors(img, model, autoencoder, lossless):
+    if lossless:
+        if autoencoder is not None:
+            T = model(img, cut_model=1)  # first half of the model
+            T_hat = autoencoder(T)
+            out, _ = model(None, cut_model=2, T=T_hat)  # second half of the model
+        else:
+            out, _ = model(img, cut_model=0)  # original model
+        return out
+    else:
+        T = model(img, cut_model=1)  # first half of the model
+        T_bottleneck = autoencoder(T, task='enc')
+        return T_bottleneck
 
 def motion_estimation(ref_tensors, model):
     _, _, ch_h, ch_w = ref_tensors.shape
@@ -143,17 +153,20 @@ def get_yolo_prediction(T, autoencoder, model):
 def val_closed_loop(opt,
                     callbacks=Callbacks()):
 
-    save_dir, batch_size, weights, single_cls, data, supp_weights, half, weights_me, plots, tensors_w, tensors_h, tensors_min, tensors_max, res_min, res_max, save_videos, track_stats = \
+    save_dir, batch_size, weights, single_cls, data, supp_weights, half, weights_me, plots, tensors_w, tensors_h, tensors_min, \
+        tensors_max, res_min, res_max, save_videos, track_stats, lossless = \
         Path(opt.save_dir), opt.batch_size, opt.weights, opt.single_cls, opt.data, opt.supp_weights, opt.half, opt.weights_me, False, \
-        opt.tensors_w, opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max, opt.save_videos, opt.track_stats
+        opt.tensors_w, opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max, opt.save_videos, opt.track_stats, opt.lossless
 
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.safe_dump(vars(opt), f, sort_keys=False)
 
     device = select_device(opt.device, batch_size=batch_size)
 
+    save_videos &= not(lossless)
+    track_stats &= not(lossless)
+
     # Load model
-    assert supp_weights is not None, 'yolo model weights should be available'
     check_suffix(weights, '.pt')
     model = attempt_load(weights, map_location=device)  # load FP32 model
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
@@ -169,25 +182,27 @@ def val_closed_loop(opt,
     model.half() if half else model.float()
 
     # Loading Autoencoder and Motion Estimator
-    assert supp_weights is not None, 'autoencoder weights should be available'
-    assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
-    autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
-    supp_ckpt = torch.load(supp_weights, map_location=device)
-    autoencoder.load_state_dict(supp_ckpt['model'])
-    print('autoencoder loaded successfully')
-    del supp_ckpt
-    autoencoder.half() if half else autoencoder.float()
-    autoencoder.eval()
+    # assert supp_weights is not None, 'autoencoder weights should be available'
+    if supp_weights is not None:
+        assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
+        autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
+        supp_ckpt = torch.load(supp_weights, map_location=device)
+        autoencoder.load_state_dict(supp_ckpt['model'])
+        print('autoencoder loaded successfully')
+        del supp_ckpt
+        autoencoder.half() if half else autoencoder.float()
+        autoencoder.eval()
 
-    assert weights_me is not None, 'motion estimator weights should be available'
-    assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
-    motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
-    me_ckpt = torch.load(weights_me, map_location=device)
-    motion_estimator.load_state_dict(me_ckpt['model'])
-    print('motion estimator loaded successfully')
-    del me_ckpt
-    motion_estimator.half() if half else autoencoder.float()
-    motion_estimator.eval()
+    # assert weights_me is not None, 'motion estimator weights should be available'
+    if weights_me is not None:
+        assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
+        motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+        me_ckpt = torch.load(weights_me, map_location=device)
+        motion_estimator.load_state_dict(me_ckpt['model'])
+        print('motion estimator loaded successfully')
+        del me_ckpt
+        motion_estimator.half() if half else autoencoder.float()
+        motion_estimator.eval()
 
     # Configure
     model.eval()
@@ -264,62 +279,65 @@ def val_closed_loop(opt,
         t2 = time_sync()
         dt[0] += t2 - t1
 
-        tensors = get_tensors(img, model, autoencoder)
+        tensors = get_tensors(img, model, autoencoder, lossless)
+        if not lossless:
+            if fr < ref_num:
+                tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
+                if save_videos:
+                    full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+                    original_full_f.write(to_be_coded_frame_data)
+                tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp if opt.qp < optimal_qp_for_I_frames else optimal_qp_for_I_frames)
+                Byte_num_seq.append(Byte_num)
+                if save_videos:
+                    reconst_video_f.write(tmp_reconst.flatten())
+                tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
+                tiled_tensors = tiled_tensors.half() if half else tiled_tensors.float()
+                rec_tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
+                ref_tensors[fr,:,:,:] = rec_tensors
+                # plt.imshow(ref_tensors[0].reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
+                # err = tensors1[0] - ref_tensors[fr,:,:,:]
+                # plt.imshow(err.reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
+            else:
+                pred_tensors = motion_estimation(ref_tensors, motion_estimator)
+                # pred_tensors = tensors
+                residual = tensors - pred_tensors
+                tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
+                to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
+                if save_videos:
+                    tiled_orig = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                    orig_data = tiled_orig.cpu().numpy().flatten().astype(np.uint8)
+                    original_full_f.write(orig_data)
+                    full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+                tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
+                Byte_num_seq.append(Byte_num)
+                tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
+                tiled_res = tiled_res.half() if half else tiled_res.float()
+                residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
+                rec_tensors = residual + pred_tensors[0,:,:,:]
+                ref_tensors = torch.roll(ref_tensors, -1, 0)
+                ref_tensors[ref_num-1,:,:,:] = rec_tensors
+                
+                # # for logging video 
+                if save_videos:
+                    tiled_tensors = tensors_to_tiled(rec_tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
+                    reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
+                    tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                    pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
+                    full_predicted_f.write(pred_data)
 
-        if fr < ref_num:
-            tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
-            to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
-            if save_videos:
-                full_to_be_coded_frame_f.write(to_be_coded_frame_data)
-                original_full_f.write(to_be_coded_frame_data)
-            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp if opt.qp < optimal_qp_for_I_frames else optimal_qp_for_I_frames)
-            Byte_num_seq.append(Byte_num)
-            if save_videos:
-                reconst_video_f.write(tmp_reconst.flatten())
-            tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
-            tiled_tensors = tiled_tensors.half() if half else tiled_tensors.float()
-            rec_tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
-            ref_tensors[fr,:,:,:] = rec_tensors
-            # plt.imshow(ref_tensors[0].reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
-            # err = tensors1[0] - ref_tensors[fr,:,:,:]
-            # plt.imshow(err.reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
+        if lossless:
+            out = tensors
         else:
-            pred_tensors = motion_estimation(ref_tensors, motion_estimator)
-            # pred_tensors = tensors
-            residual = tensors - pred_tensors
-            tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
-            to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
+            out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
+            error = rec_tensors - tensors[0]
+            # out = get_yolo_prediction(tensors, autoencoder, model)
+            if track_stats:
+                stats_error.update_stats(error.detach().clone().cpu().numpy())
             if save_videos:
-                tiled_orig = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
-                orig_data = tiled_orig.cpu().numpy().flatten().astype(np.uint8)
-                original_full_f.write(orig_data)
-                full_to_be_coded_frame_f.write(to_be_coded_frame_data)
-            tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
-            Byte_num_seq.append(Byte_num)
-            tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
-            tiled_res = tiled_res.half() if half else tiled_res.float()
-            residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
-            rec_tensors = residual + pred_tensors[0,:,:,:]
-            ref_tensors = torch.roll(ref_tensors, -1, 0)
-            ref_tensors[ref_num-1,:,:,:] = rec_tensors
-            
-            # # for logging video 
-            if save_videos:
-                tiled_tensors = tensors_to_tiled(rec_tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
-                reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
-                tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
-                pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
-                full_predicted_f.write(pred_data)
-
-        error = rec_tensors - tensors[0]
-        out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
-        # out = get_yolo_prediction(tensors, autoencoder, model)
-        if track_stats:
-            stats_error.update_stats(error.detach().clone().cpu().numpy())
-        if save_videos:
-            tiled_error = tensors_to_tiled(error[None, :], tensors_w, tensors_h, res_min, res_max)
-            error_data = tiled_error.cpu().numpy().flatten().astype(np.uint8)
-            error_full_f.write(error_data)
+                tiled_error = tensors_to_tiled(error[None, :], tensors_w, tensors_h, res_min, res_max)
+                error_data = tiled_error.cpu().numpy().flatten().astype(np.uint8)
+                error_full_f.write(error_data)
 
 
         dt[1] += time_sync() - t2
@@ -513,6 +531,7 @@ def parse_opt():
     parser.add_argument('--res-max', type=float, default=1, help='the clipping upper bound for the residuals')
     parser.add_argument('--save-videos', action='store_true', help='save the predicted, to-be-coded, and reconstructed videos')
     parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
+    parser.add_argument('--lossless', action='store_true', help='This flag indicates evaluation without compression')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
