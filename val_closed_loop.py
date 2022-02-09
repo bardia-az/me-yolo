@@ -183,6 +183,7 @@ def val_closed_loop(opt,
 
     # Loading Autoencoder and Motion Estimator
     # assert supp_weights is not None, 'autoencoder weights should be available'
+    autoencoder = None
     if supp_weights is not None:
         assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
         autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
@@ -194,6 +195,7 @@ def val_closed_loop(opt,
         autoencoder.eval()
 
     # assert weights_me is not None, 'motion estimator weights should be available'
+    motion_estimator = None
     if weights_me is not None:
         assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
         motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
