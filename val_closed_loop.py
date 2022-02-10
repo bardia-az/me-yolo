@@ -218,7 +218,7 @@ def val_closed_loop(opt,
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     pad = 0.0
     task = 'val'
-    video_sequence = create_dataloader(data[task], imgsz, batch_size, gs, single_cls, pad=pad, rect=True, rect_img=False,
+    video_sequence = create_dataloader(data[task], imgsz, batch_size, gs, single_cls, pad=pad, rect=False, rect_img=False,
                                        prefix=colorstr(f'{task}: '))[0]
 
     seen = 0
