@@ -109,9 +109,12 @@ def get_tensors(img, model, autoencoder, lossless):
         return T_bottleneck
 
 def motion_estimation(ref_tensors, model):
-    _, _, ch_h, ch_w = ref_tensors.shape
-    T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
-    return model(T_in[None, :])
+    if model is not None:
+        _, _, ch_h, ch_w = ref_tensors.shape
+        T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
+        return model(T_in[None, :])
+    else:
+        return torch.zeros(1, device=ref_tensors.device)
 
 def tensors_to_tiled(tensor, tensors_w, tensors_h, tensors_min, tensors_max):
     shape = tensor.shape
@@ -205,6 +208,9 @@ def val_closed_loop(opt,
         del me_ckpt
         motion_estimator.half() if half else autoencoder.float()
         motion_estimator.eval()
+    else:
+        res_min = tensors_min
+        res_max = tensors_max
 
     # Configure
     model.eval()
@@ -234,10 +240,11 @@ def val_closed_loop(opt,
 
     if save_videos:
         (save_dir / 'to_be_coded').mkdir(parents=True, exist_ok=True)
-        (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
         (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
         (save_dir / 'original').mkdir(parents=True, exist_ok=True)
         (save_dir / 'error').mkdir(parents=True, exist_ok=True)
+        if motion_estimator is not None:
+            (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
         to_be_coded_full_name = (save_dir / 'to_be_coded' / f'to_be_coded_{video}').with_suffix('.yuv')
         predicted_full_name = (save_dir / 'predicted' / f'predicted_{video}').with_suffix('.yuv')
         reconstructed_full_name = (save_dir / 'reconstructed' / f'reconstructed_{video}').with_suffix('.yuv')
@@ -257,7 +264,7 @@ def val_closed_loop(opt,
         assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before. Videos are already available.'
 
     full_to_be_coded_frame_f = to_be_coded_full_name.open('ab') if save_videos else None
-    full_predicted_f = predicted_full_name.open('ab') if save_videos else None
+    full_predicted_f = predicted_full_name.open('ab') if save_videos and motion_estimator is not None else None
     reconst_video_f = reconstructed_full_name.open('ab') if save_videos else None
     original_full_f = original_full_name.open('ab') if save_videos else None
     error_full_f = error_full_name.open('ab') if save_videos else None
@@ -289,7 +296,7 @@ def val_closed_loop(opt,
                 if save_videos:
                     full_to_be_coded_frame_f.write(to_be_coded_frame_data)
                     original_full_f.write(to_be_coded_frame_data)
-                tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp if opt.qp < optimal_qp_for_I_frames else optimal_qp_for_I_frames)
+                tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp if opt.qp < optimal_qp_for_I_frames or motion_estimator is None else optimal_qp_for_I_frames)
                 Byte_num_seq.append(Byte_num)
                 if save_videos:
                     reconst_video_f.write(tmp_reconst.flatten())
@@ -316,7 +323,7 @@ def val_closed_loop(opt,
                 tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
                 tiled_res = tiled_res.half() if half else tiled_res.float()
                 residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
-                rec_tensors = residual + pred_tensors[0,:,:,:]
+                rec_tensors = residual + pred_tensors[0]
                 ref_tensors = torch.roll(ref_tensors, -1, 0)
                 ref_tensors[ref_num-1,:,:,:] = rec_tensors
                 
@@ -324,9 +331,10 @@ def val_closed_loop(opt,
                 if save_videos:
                     tiled_tensors = tensors_to_tiled(rec_tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
                     reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
-                    tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
-                    pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
-                    full_predicted_f.write(pred_data)
+                    if motion_estimator is not None:
+                        tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                        pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
+                        full_predicted_f.write(pred_data)
 
         if lossless:
             out = tensors
@@ -398,10 +406,11 @@ def val_closed_loop(opt,
 
     if save_videos:
         full_to_be_coded_frame_f.close()
-        full_predicted_f.close()
         reconst_video_f.close()
         original_full_f.close()
         error_full_f.close()
+        if motion_estimator is not None:
+            full_predicted_f.close()
     
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
