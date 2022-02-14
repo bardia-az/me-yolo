@@ -87,11 +87,10 @@ def process_batch(detections, labels, iouv):
     return correct
 
 
-def read_y_channel(file_name, w, h):
-    with open(file_name, 'rb') as f:
-        raw = f.read(w*h)
-        raw = np.frombuffer(raw, dtype=np.uint8)
-        raw = raw.reshape((h,w))
+def read_y_channel(file, w, h):
+    raw = file.read(w*h)
+    raw = np.frombuffer(raw, dtype=np.uint8)
+    raw = raw.reshape((h,w))
     return raw
 
 def get_tensors(img, model, autoencoder, lossless):
@@ -142,7 +141,8 @@ def encode_frame(data, tensors_w, tensors_h, txt_file, frame_rate, qp):
         f.write(data)
     subprocess.call(VVC_command, stdout=txt_file)
     Byte_num = os.path.getsize('working_dir/bitstream.bin')/1024.0
-    tmp_reconst = read_y_channel('working_dir/reconst.yuv', tensors_w, tensors_h)
+    with open('working_dir/reconst.yuv', 'rb') as f:
+        tmp_reconst = read_y_channel(f, tensors_w, tensors_h)
     return tmp_reconst, Byte_num
 
 def get_yolo_prediction(T, autoencoder, model):
@@ -157,9 +157,9 @@ def val_closed_loop(opt,
                     callbacks=Callbacks()):
 
     save_dir, batch_size, weights, single_cls, data, supp_weights, half, weights_me, plots, tensors_w, tensors_h, tensors_min, \
-        tensors_max, res_min, res_max, save_videos, track_stats, lossless = \
-        Path(opt.save_dir), opt.batch_size, opt.weights, opt.single_cls, opt.data, opt.supp_weights, opt.half, opt.weights_me, False, \
-        opt.tensors_w, opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max, opt.save_videos, opt.track_stats, opt.lossless
+        tensors_max, res_min, res_max, save_videos, track_stats, lossless, tensor_video = \
+        Path(opt.save_dir), opt.batch_size, opt.weights, opt.single_cls, opt.data, opt.supp_weights, opt.half, opt.weights_me, False, opt.tensors_w, \
+        opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max, opt.save_videos, opt.track_stats, opt.lossless, opt.tensor_video
 
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.safe_dump(vars(opt), f, sort_keys=False)
@@ -179,6 +179,10 @@ def val_closed_loop(opt,
     video_name = data.split('/')[-1].split('.')[0]
     video = f'{video_name}_QP{opt.qp}'
     data = check_dataset(data, suffix=opt.data_suffix)  # check
+    if tensor_video is not None:
+        tensor_video = Path(tensor_video)
+        tensor_video_vvc = (tensor_video / video_name).with_suffix('.bin')
+        tensor_video = (tensor_video / video_name).with_suffix('.yuv')
 
     # Half
     half &= device.type != 'cpu'  # half precision only supported on CUDA
@@ -238,37 +242,41 @@ def val_closed_loop(opt,
 
     stats_error = StatCalculator(opt.dist_range, opt.bins) if track_stats else None
 
-    if save_videos:
+    if save_videos and tensor_video is None:
         (save_dir / 'to_be_coded').mkdir(parents=True, exist_ok=True)
         (save_dir / 'reconstructed').mkdir(parents=True, exist_ok=True)
         (save_dir / 'original').mkdir(parents=True, exist_ok=True)
-        (save_dir / 'error').mkdir(parents=True, exist_ok=True)
         if motion_estimator is not None:
             (save_dir / 'predicted').mkdir(parents=True, exist_ok=True)
         to_be_coded_full_name = (save_dir / 'to_be_coded' / f'to_be_coded_{video}').with_suffix('.yuv')
         predicted_full_name = (save_dir / 'predicted' / f'predicted_{video}').with_suffix('.yuv')
         reconstructed_full_name = (save_dir / 'reconstructed' / f'reconstructed_{video}').with_suffix('.yuv')
         original_full_name = (save_dir / 'original' / f'original_{video}').with_suffix('.yuv')
+    if save_videos:
+        (save_dir / 'error').mkdir(parents=True, exist_ok=True)
         error_full_name = (save_dir / 'error' / f'error_{video}').with_suffix('.yuv')
 
     if track_stats:
         (save_dir / 'error_stats').mkdir(parents=True, exist_ok=True)
         error_dir = (save_dir / 'error_stats')
 
-    (save_dir / 'report').mkdir(parents=True, exist_ok=True)
-    (save_dir / 'plots').mkdir(parents=True, exist_ok=True)
-    report_file_name = (save_dir / 'report' / video).with_suffix('.txt')
-    plot_dir = (save_dir / 'plots')
+    if tensor_video is None and not(lossless):
+        (save_dir / 'report').mkdir(parents=True, exist_ok=True)
+        (save_dir / 'plots').mkdir(parents=True, exist_ok=True)
+        report_file_name = (save_dir / 'report' / video).with_suffix('.txt')
+        plot_dir = (save_dir / 'plots')
 
     if save_videos:
-        assert not (to_be_coded_full_name.exists() or predicted_full_name.exists() or reconstructed_full_name.exists()), 'Seems this run has been done before. Videos are already available.'
+        assert not (error_full_name.exists()), 'This run has been done before. Videos are already available. Delete the videos to run again.'
 
-    full_to_be_coded_frame_f = to_be_coded_full_name.open('ab') if save_videos else None
-    full_predicted_f = predicted_full_name.open('ab') if save_videos and motion_estimator is not None else None
-    reconst_video_f = reconstructed_full_name.open('ab') if save_videos else None
-    original_full_f = original_full_name.open('ab') if save_videos else None
+    if tensor_video is None:
+        full_to_be_coded_frame_f = to_be_coded_full_name.open('ab') if save_videos else None
+        full_predicted_f = predicted_full_name.open('ab') if save_videos and motion_estimator is not None else None
+        reconst_video_f = reconstructed_full_name.open('ab') if save_videos else None
+        original_full_f = original_full_name.open('ab') if save_videos else None
+        report_file = report_file_name.open('a') if not(lossless) else None
+    tensor_video_f = Path(tensor_video).open('rb') if tensor_video is not None else None
     error_full_f = error_full_name.open('ab') if save_videos else None
-    report_file = report_file_name.open('a')
 
     optimal_qp_for_I_frames = 28
     ref_num = 2
@@ -289,52 +297,57 @@ def val_closed_loop(opt,
         dt[0] += t2 - t1
 
         tensors = get_tensors(img, model, autoencoder, lossless)
-        if not lossless:
-            if fr < ref_num:
-                tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
-                to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
-                if save_videos:
-                    full_to_be_coded_frame_f.write(to_be_coded_frame_data)
-                    original_full_f.write(to_be_coded_frame_data)
-                tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp if opt.qp < optimal_qp_for_I_frames or motion_estimator is None else optimal_qp_for_I_frames)
-                Byte_num_seq.append(Byte_num)
-                if save_videos:
-                    reconst_video_f.write(tmp_reconst.flatten())
-                tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
-                tiled_tensors = tiled_tensors.half() if half else tiled_tensors.float()
-                rec_tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
-                ref_tensors[fr,:,:,:] = rec_tensors
-                # plt.imshow(ref_tensors[0].reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
-                # err = tensors1[0] - ref_tensors[fr,:,:,:]
-                # plt.imshow(err.reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
-            else:
-                pred_tensors = motion_estimation(ref_tensors, motion_estimator)
-                # pred_tensors = tensors
-                residual = tensors - pred_tensors
-                tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
-                to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
-                if save_videos:
-                    tiled_orig = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
-                    orig_data = tiled_orig.cpu().numpy().flatten().astype(np.uint8)
-                    original_full_f.write(orig_data)
-                    full_to_be_coded_frame_f.write(to_be_coded_frame_data)
-                tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
-                Byte_num_seq.append(Byte_num)
-                tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
-                tiled_res = tiled_res.half() if half else tiled_res.float()
-                residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
-                rec_tensors = residual + pred_tensors[0]
-                ref_tensors = torch.roll(ref_tensors, -1, 0)
-                ref_tensors[ref_num-1,:,:,:] = rec_tensors
-                
-                # # for logging video 
-                if save_videos:
-                    tiled_tensors = tensors_to_tiled(rec_tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
-                    reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
-                    if motion_estimator is not None:
-                        tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
-                        pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
-                        full_predicted_f.write(pred_data)
+        if tensor_video is None:
+            if not lossless:
+                if fr < ref_num:
+                    tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                    to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
+                    if save_videos:
+                        full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+                        original_full_f.write(to_be_coded_frame_data)
+                    tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp if opt.qp < optimal_qp_for_I_frames or motion_estimator is None else optimal_qp_for_I_frames)
+                    Byte_num_seq.append(Byte_num)
+                    if save_videos:
+                        reconst_video_f.write(tmp_reconst.flatten())
+                    tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
+                    tiled_tensors = tiled_tensors.half() if half else tiled_tensors.float()
+                    rec_tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
+                    ref_tensors[fr,:,:,:] = rec_tensors
+                    # plt.imshow(ref_tensors[0].reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
+                    # err = tensors1[0] - ref_tensors[fr,:,:,:]
+                    # plt.imshow(err.reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
+                else:
+                    pred_tensors = motion_estimation(ref_tensors, motion_estimator)
+                    # pred_tensors = tensors
+                    residual = tensors - pred_tensors
+                    tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
+                    to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
+                    if save_videos:
+                        tiled_orig = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                        orig_data = tiled_orig.cpu().numpy().flatten().astype(np.uint8)
+                        original_full_f.write(orig_data)
+                        full_to_be_coded_frame_f.write(to_be_coded_frame_data)
+                    tmp_reconst, Byte_num = encode_frame(to_be_coded_frame_data, tensors_w, tensors_h, report_file, data['frame_rate'], opt.qp)
+                    Byte_num_seq.append(Byte_num)
+                    tiled_res = torch.from_numpy(tmp_reconst.copy()).to(device)
+                    tiled_res = tiled_res.half() if half else tiled_res.float()
+                    residual = tiled_to_tensor(tiled_res, ch_w, ch_h, res_min, res_max)
+                    rec_tensors = residual + pred_tensors[0]
+                    ref_tensors = torch.roll(ref_tensors, -1, 0)
+                    ref_tensors[ref_num-1,:,:,:] = rec_tensors
+                    
+                    # # for logging video 
+                    if save_videos:
+                        tiled_tensors = tensors_to_tiled(rec_tensors[None, :], tensors_w, tensors_h, tensors_min, tensors_max)
+                        reconst_video_f.write(tiled_tensors.cpu().numpy().flatten().astype(np.uint8))
+                        if motion_estimator is not None:
+                            tiled_pred = tensors_to_tiled(pred_tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                            pred_data = tiled_pred.cpu().numpy().flatten().astype(np.uint8)
+                            full_predicted_f.write(pred_data)
+        else:
+            tmp_reconst = read_y_channel(tensor_video_f, tensors_w, tensors_h)
+            tiled_tensors = torch.from_numpy(tmp_reconst.copy()).to(device)
+            rec_tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
 
         if lossless:
             out = tensors
@@ -404,13 +417,16 @@ def val_closed_loop(opt,
             f = save_dir / f'val_batch{fr}_pred.jpg'  # predictions
             Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
 
-    if save_videos:
+    if save_videos and tensor_video is None:
         full_to_be_coded_frame_f.close()
         reconst_video_f.close()
         original_full_f.close()
-        error_full_f.close()
         if motion_estimator is not None:
             full_predicted_f.close()
+    if save_videos:
+        error_full_f.close()
+    if tensor_video is not None:
+        tensor_video_f.close()
     
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
@@ -422,6 +438,9 @@ def val_closed_loop(opt,
     else:
         nt = torch.zeros(1)
 
+    if tensor_video is not None:
+        Byte_num = os.path.getsize(tensor_video_vvc)/1024.0
+        Byte_num_seq.append(Byte_num)
     bit_rate = sum(Byte_num_seq) * 8 * data['frame_rate'] / len(video_sequence)
 
     # Print results   
@@ -433,7 +452,7 @@ def val_closed_loop(opt,
     with open(file, 'a') as f:
         f.write(s + (('%20.5g,' * 6) % (opt.qp, bit_rate, map50*100, map*100, mp, mr)) + '\n')
     
-    if opt.track_stats:
+    if track_stats:
         stats_error.output_stats(error_dir, video)
         
     # Print results per class
@@ -446,11 +465,12 @@ def val_closed_loop(opt,
                 LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
                 f.write(('%20.5g,' + '%20s,' + '%20.5g,' * 6) % (opt.qp, names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]) + '\n')
 
-    plt.plot(Byte_num_seq)
-    plt.xlabel('frame number')
-    plt.ylabel('frame size (kB)')
-    plt.title(video)
-    plt.savefig(str(plot_dir / f'rate_fig_{video}.png'))
+    if tensor_video is None and not(lossless):
+        plt.plot(Byte_num_seq)
+        plt.xlabel('frame number')
+        plt.ylabel('frame size (kB)')
+        plt.title(video)
+        plt.savefig(str(plot_dir / f'rate_fig_{video}.png'))
     print(f'\nbit rate (kb/s) <{video}> = {bit_rate:.2f}')
     print(f'size of the compressed file (kB) <{video}> = {sum(Byte_num_seq):.2f}\n')
 
@@ -543,6 +563,7 @@ def parse_opt():
     parser.add_argument('--save-videos', action='store_true', help='save the predicted, to-be-coded, and reconstructed videos')
     parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
     parser.add_argument('--lossless', action='store_true', help='This flag indicates evaluation without compression')
+    parser.add_argument('--tensor-video', type=str, default=None, help='the path of the tiled tensor video')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
