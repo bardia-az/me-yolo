@@ -104,7 +104,10 @@ def get_tensors(img, model, autoencoder, lossless):
         return out
     else:
         T = model(img, cut_model=1)  # first half of the model
-        T_bottleneck = autoencoder(T, task='enc')
+        if autoencoder is not None:
+            T_bottleneck = autoencoder(T, task='enc')
+        else:
+            T_bottleneck = T
         return T_bottleneck
 
 def motion_estimation(ref_tensors, model):
@@ -146,8 +149,11 @@ def encode_frame(data, tensors_w, tensors_h, txt_file, frame_rate, qp):
     return tmp_reconst, Byte_num
 
 def get_yolo_prediction(T, autoencoder, model):
-    T_hat = autoencoder(T, task='dec', bottleneck=T)
-    out, _ = model(None, cut_model=2, T=T_hat)  # second half of the model
+    if autoencoder is not None:
+        T_hat = autoencoder(T, task='dec', bottleneck=T)
+        out, _ = model(None, cut_model=2, T=T_hat)  # second half of the model
+    else:
+        out, _ = model(None, cut_model=2, T=T)  # second half of the model
     return out
 
 
@@ -210,7 +216,7 @@ def val_closed_loop(opt,
         motion_estimator.load_state_dict(me_ckpt['model'])
         print('motion estimator loaded successfully')
         del me_ckpt
-        motion_estimator.half() if half else autoencoder.float()
+        motion_estimator.half() if half else motion_estimator.float()
         motion_estimator.eval()
     else:
         res_min = tensors_min

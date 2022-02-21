@@ -259,12 +259,15 @@ def run(data,
                 out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
 
             else:
-                if(cut_model==1):
-                    T = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
-                elif(cut_model==0):
-                    out, train_out = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
-                elif(cut_model==2):
-                    out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
+                T = model(img, augment=augment, cut_model=1)  # inference and training outputs
+                stats_bottleneck.update_stats(T.detach().clone().cpu().numpy())
+                out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
+                # if(cut_model==1):
+                #     T = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
+                # elif(cut_model==0):
+                #     out, train_out = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
+                # elif(cut_model==2):
+                #     out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
 
         dt[1] += time_sync() - t2
 
