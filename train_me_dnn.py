@@ -118,7 +118,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     with torch_distributed_zero_first(LOCAL_RANK):
         weights = attempt_download(weights)  # download if not found locally
     ckpt = torch.load(weights, map_location=device)  # load checkpoint
-    model = Model(ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+    model = Model(ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors'), me=True).to(device)  # create
     exclude = ['anchor'] if (hyp.get('anchors')) and not resume else []  # exclude keys
     csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
     csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
@@ -280,7 +280,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     scaler = amp.GradScaler(enabled=cuda)
     stopper = EarlyStopping(patience=opt.patience)
     # compute_loss = ComputeLoss(model)  # init loss class
-    compute_loss_me = ComputeLossME(device, opt.feature_max)  # init loss class
+    compute_loss_me = ComputeLossME(device, opt.feature_max, opt.w_features)  # init loss class
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers} dataloader workers\n'
                 f"Logging results to {colorstr('bold', save_dir)}\n"
@@ -292,11 +292,11 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
-        mloss = torch.zeros(3, device=device)  # mean losses
+        mloss = torch.zeros(4, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
-        LOGGER.info(('\n' + '%10s' * 5) % ('Epoch', 'gpu_mem', 'L1', 'L2', 'psnr'))
+        LOGGER.info(('\n' + '%10s' * 6) % ('Epoch', 'gpu_mem', 'L1', 'L2', 'psnr', 'loss_out'))
         if RANK in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
@@ -326,8 +326,12 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 T2_tilde = autoencoder(T2, task='enc')
                 Ttrg_tilde = autoencoder(Ttrg, task='enc')
                 T_in = torch.cat((T1_tilde, T2_tilde), 1)
-                Ttrg_hat = motion_estimator(T_in)
-                loss, loss_items = compute_loss_me(Ttrg_hat, Ttrg_tilde)
+                Tpred_tilde = motion_estimator(T_in)
+                Tpred_hat = autoencoder(None, task='dec', bottleneck=Tpred_tilde)
+                Ttrg_hat = autoencoder(None, task='dec', bottleneck=Ttrg_tilde)
+                out_pred, _ = model(None, cut_model=2, T=Tpred_hat)  # second half of the model
+                out_trg, _ = model(None, cut_model=2, T=Ttrg_hat)  # second half of the model
+                loss, loss_items = compute_loss_me(Tpred_tilde, Ttrg_tilde, out_pred, out_trg)
                 # loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
@@ -335,7 +339,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     loss *= 4.
 
             # Backward
-            scaler.scale(loss).backward()
+            with torch.autograd.set_detect_anomaly(True):
+                scaler.scale(loss).backward()
 
             # Optimize
             if ni - last_opt_step >= accumulate:
@@ -348,7 +353,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if RANK in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%10s' * 2 + '%10.4g' * 3) % (f'{epoch}/{epochs - 1}', mem, *mloss))
+                pbar.set_description(('%10s' * 2 + '%10.4g' * 4) % (f'{epoch}/{epochs - 1}', mem, *mloss))
                 # callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
             # end batch ------------------------------------------------------------------------------------------------
 
@@ -488,6 +493,7 @@ def parse_opt(known=False):
     parser.add_argument('--train-list', type=str, default=None, help='txt file containing the training list')
     parser.add_argument('--val-list', type=str, default=None, help='txt file containing the validation list')
     parser.add_argument('--feature-max', type=float, default=20, help='The maximum range of the bottleneck features (for PSNR calculations)')
+    parser.add_argument('--w-features', type=float, default=0.0001, help='The weight of the bottleneck features fidelity in the total loss')
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
     return opt

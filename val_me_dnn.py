@@ -193,13 +193,13 @@ def run(data,
     # names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
     # class_map = coco80_to_coco91_class() if is_coco else list(range(1000))
     # s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
-    s = ('\n' + '%10s' * 3) % ('L1', 'L2', 'psnr')
+    s = ('\n' + '%10s' * 4) % ('L1', 'L2', 'psnr', 'loss_out')
     dt, p, r, f1, mp, mr, map50, map = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     # jdict, stats, ap, ap_class = [], [], [], []
     if not compute_loss_me:
         compute_loss_me = ComputeLossME(device, feature_max)
     stats_residual = StatCalculator(dist_range, bins) if track_stats else None
-    mloss = torch.zeros(3, device=device)  # mean losses
+    mloss = torch.zeros(4, device=device)  # mean losses
     
     for batch_i, (ref1, ref2, target) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
@@ -224,10 +224,13 @@ def run(data,
         T1_tilde = autoencoder(T1, task='enc')
         T2_tilde = autoencoder(T2, task='enc')
         Ttrg_tilde = autoencoder(Ttrg, task='enc')
-        # pred = model(None, cut_model=2, T=T_hat)  # second half of the model
         T_in = torch.cat((T1_tilde, T2_tilde), 1)
-        Ttrg_hat = motion_estimator(T_in)
-        loss, loss_items = compute_loss_me(Ttrg_hat, Ttrg_tilde)
+        Tpred_tilde = motion_estimator(T_in)
+        Tpred_hat = autoencoder(None, task='dec', bottleneck=Tpred_tilde)
+        Ttrg_hat = autoencoder(None, task='dec', bottleneck=Ttrg_tilde)
+        out_pred, _ = model(None, cut_model=2, T=Tpred_hat)  # second half of the model
+        out_trg, _ = model(None, cut_model=2, T=Ttrg_hat)  # second half of the model
+        loss, loss_items = compute_loss_me(Tpred_tilde, Ttrg_tilde, out_pred, out_trg)
 
         mloss = (mloss * batch_i + loss_items) / (batch_i + 1)  # update mean losses
 
@@ -307,8 +310,8 @@ def run(data,
     # #     nt = torch.zeros(1)
 
     # # # Print results
-    pf = '%10.4g' * 3  # print format
-    LOGGER.info(pf % (mloss[0], mloss[1], mloss[2]))
+    pf = '%10.4g' * 4  # print format
+    LOGGER.info(pf % (mloss[0], mloss[1], mloss[2], mloss[3]))
     # # with open(save_dir / 'result.txt', 'a') as f:
     # #     form = ' \n\nClass = ' + '%s' + '\n' + 'Images = ' + '%i' + '\n' + 'Labels = ' + '%i' + '\n' + 'P =' + '%.3g' + '\n' + 'R =' + '%.3g' + '\n' + 'mAP@.5 =' + '%.3g' + '\n' + 'mAP@.5:.95 =' + '%.3g' + '\n\n'
     # #     f.write(form % ('all', seen, nt.sum(), mp, mr, map50*100, map*100))

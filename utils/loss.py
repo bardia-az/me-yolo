@@ -129,17 +129,23 @@ class CompressibilityLoss:
 
 
 class ComputeLossME:
-    def __init__(self, device, MAX):
+    def __init__(self, device, MAX, w_features):
         self.device = device
         self.MAX = MAX
-    def __call__(self, T1, T2):
-        loss_l1, loss_l2, psnr = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
+        self.w_features = w_features
+    def __call__(self, T1, T2, out_pred, out_trg):
+        loss_l1, loss_l2, psnr, loss_out = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device), torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
         loss_l1[0] = l1_loss(T1, T2)
         mse = mse_loss(T1, T2, reduction='none').mean((2,3))
         loss_l2[0] = torch.mean(mse)
         psnr_per_feature = 10 * torch.log10(self.MAX**2 / mse)
         psnr[0] = torch.mean(psnr_per_feature)
-        return loss_l1, torch.cat((loss_l1, loss_l2, psnr)).detach()
+        # object detection loss
+        out_diff = out_trg[:,:,4].unsqueeze(2) * mse_loss(out_pred, out_trg, reduction='none')
+        loss_out[0] = torch.mean(out_diff)
+
+        loss_tot = (1-self.w_features) * loss_out + self.w_features * loss_l1
+        return loss_tot, torch.cat((loss_l1, loss_l2, psnr, loss_out)).detach()
 
 
 def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441

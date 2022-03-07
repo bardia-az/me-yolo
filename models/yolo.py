@@ -59,7 +59,11 @@ class Detect(nn.Module):
                     self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
 
                 y = x[i].sigmoid()
-                if self.inplace:
+                if self.me:
+                    xy = (y[..., 0:2] * 2 - 0.5 + self.grid[i]) / torch.tensor([nx, ny], device=self.stride.device)  # xy
+                    wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i] / (torch.tensor([nx, ny], device=self.stride.device) * self.stride[i])  # wh
+                    y = torch.cat((xy, wh, y[..., 4:]), -1)
+                elif self.inplace:
                     y[..., 0:2] = (y[..., 0:2] * 2 - 0.5 + self.grid[i]) * self.stride[i]  # xy
                     y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
                 else:  # for YOLOv5 on AWS Inferentia https://github.com/ultralytics/yolov5/pull/2953
@@ -83,7 +87,7 @@ class Detect(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
+    def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None, me=False):  # model, input channels, number of classes
         super().__init__()
         if isinstance(cfg, dict):
             self.yaml = cfg  # model dict
@@ -115,6 +119,7 @@ class Model(nn.Module):
             check_anchor_order(m)
             self.stride = m.stride
             self._initialize_biases()  # only run once
+            m.me = me
 
         # Init weights, biases
         initialize_weights(self)
