@@ -435,6 +435,23 @@ def val_closed_loop(opt,
         tensor_video_f.close()
     
     # Compute statistics
+    if opt.res_per_frame:
+        map50_fr, map_fr = [], []
+        map50_tmp, map_tmp = 0.0, 0.0
+        for stat in stats:
+            if len(stat) and stat[0].any():
+                _, _, ap_tmp, _, _ = ap_per_class(*stats, plot=plots, save_dir=save_dir, names=names)
+                ap50_tmp, ap_tmp = ap_tmp[:, 0], ap_tmp.mean(1)  # AP@0.5, AP@0.5:0.95
+                map50_tmp, map_tmp = ap50_tmp.mean(), ap_tmp.mean()
+                nt = np.bincount(stat[3].astype(np.int64), minlength=nc)  # number of targets per class
+            else:
+                nt = torch.zeros(1)
+            map50_fr.append(map50_tmp)
+            map_fr.append(map_tmp)
+        file = (save_dir / f'result_frame_{video_name}').with_suffix('.csv')
+        with open(file, 'a') as f:
+            np.savetxt(file, map50_fr, fmt='%20.5g')
+            
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     if len(stats) and stats[0].any():
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, save_dir=save_dir, names=names)
@@ -570,6 +587,7 @@ def parse_opt():
     parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
     parser.add_argument('--lossless', action='store_true', help='This flag indicates evaluation without compression')
     parser.add_argument('--tensor-video', type=str, default=None, help='the path of the tiled tensor video')
+    parser.add_argument('--res-per-frame', action='store_true', help='save the mAP results per frame')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML

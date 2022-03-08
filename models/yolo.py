@@ -59,7 +59,7 @@ class Detect(nn.Module):
                     self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
 
                 y = x[i].sigmoid()
-                if self.me:
+                if getattr(self, "me", False):
                     xy = (y[..., 0:2] * 2 - 0.5 + self.grid[i]) / torch.tensor([nx, ny], device=self.stride.device)  # xy
                     wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i] / (torch.tensor([nx, ny], device=self.stride.device) * self.stride[i])  # wh
                     y = torch.cat((xy, wh, y[..., 4:]), -1)
