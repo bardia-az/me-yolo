@@ -224,8 +224,9 @@ def run(data,
         T1_tilde = autoencoder(T1, task='enc')
         T2_tilde = autoencoder(T2, task='enc')
         Ttrg_tilde = autoencoder(Ttrg, task='enc')
-        T_in = torch.cat((T1_tilde, T2_tilde), 1)
-        Tpred_tilde = motion_estimator(T_in)
+        # T_in = torch.cat((T1_tilde, T2_tilde), 1)
+        # Tpred_tilde = motion_estimator(T_in)
+        Tpred_tilde = motion_estimator(T1_tilde, T2_tilde)
         Tpred_hat = autoencoder(None, task='dec', bottleneck=Tpred_tilde)
         Ttrg_hat = autoencoder(None, task='dec', bottleneck=Ttrg_tilde)
         out_pred, _ = model(None, cut_model=2, T=Tpred_hat)  # second half of the model

@@ -14,6 +14,7 @@ from utils.plots import feature_visualization, visualize_one_channel
 import torch.nn.functional as F
 import torch.nn.init as init
 import torchvision
+import itertools
 
 
 ################## Auto Encoder ######################
@@ -71,7 +72,6 @@ class AutoEncoder(nn.Module):
 
 
 ################## Motion Estimation ######################
-
 class MotionEstimation(nn.Module):
     def __init__(self, in_channels = 2):
         super(MotionEstimation, self).__init__()
@@ -192,6 +192,153 @@ class MotionEstimation(nn.Module):
         # conv1_u     = self.Conv1_u(compns1_u)
 
         return conv1_u
+
+
+################## Motion Compensation ######################
+class InterPrediction(nn.Module):
+    def __init__(self, in_channels=2, G=1):     # number of input channels, number of Groups in doform_conv
+        super(InterPrediction, self).__init__()
+
+        def Conv2x(numInputCh, numMidCh, numOutCh, k=3):
+            return nn.Sequential(
+                nn.Conv2d(in_channels=numInputCh,  out_channels=numMidCh, kernel_size=k, stride=1, padding=k//2),
+                nn.Conv2d(in_channels=numMidCh,  out_channels=numOutCh , kernel_size=k, stride=1, padding=k//2),
+            )
+        def Conv1x(numInputCh, numOutCh, k=3):
+            return nn.Conv2d(in_channels=numInputCh,  out_channels=numOutCh, kernel_size=k, stride=1, padding=k//2)
+
+        def ConvStandard(numInputCh, numOutCh, k=3):
+            return nn.Sequential(
+                nn.Conv2d(in_channels=numInputCh,  out_channels=numOutCh, kernel_size=k, stride=1, padding=k//2),
+                nn.BatchNorm2d(numOutCh),
+                nn.SiLU(),
+            )
+
+        def ResBlock(ch, k=3):
+            return nn.Sequential(
+                nn.Conv2d(in_channels=ch,  out_channels=ch, kernel_size=k, stride=1, padding=k//2),
+                nn.SiLU(),
+                nn.Conv2d(in_channels=ch,  out_channels=ch, kernel_size=k, stride=1, padding=k//2),
+            )
+
+        def UpSampling(numInputCh, k=3):
+            return nn.Sequential(
+                nn.Conv2d(in_channels=numInputCh, out_channels=numInputCh, kernel_size=k, stride=1, padding=k//2),
+                nn.SiLU(),
+            )
+
+        c = in_channels
+        #--- Motion Estimation ---#
+        # Layer1
+        self.GetMasterMotion1 = ConvStandard(numInputCh=2*c, numOutCh=2*c)
+        self.GetMasterMotion_Layer1 = Conv2x(numInputCh=2*c, numMidCh=2*c, numOutCh=2*c)
+        self.GetMotion_Layer1_1 = Conv1x(numInputCh=2*c, numOutCh=c*2*9*G)
+        self.GetMotion_Layer1_2 = Conv1x(numInputCh=2*c, numOutCh=c*2*9*G)
+        # Layer2
+        self.Motion_DownSample = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.GetMasterMotion2 = ConvStandard(numInputCh=2*c, numOutCh=4*c)
+        self.GetMasterMotion_Layer2 = Conv2x(numInputCh=4*c, numMidCh=4*c, numOutCh=4*c)
+        self.GetMotion_Layer2_1 = Conv1x(numInputCh=4*c, numOutCh=(2*c)*2*9*G)
+        self.GetMotion_Layer2_2 = Conv1x(numInputCh=4*c, numOutCh=(2*c)*2*9*G)
+        me_modules = itertools.chain(self.GetMasterMotion1.modules(), self.GetMasterMotion_Layer1.modules(), self.GetMotion_Layer1_1.modules(), self.GetMotion_Layer1_2.modules(),\
+                                     self.GetMasterMotion2.modules(), self.GetMasterMotion_Layer2.modules(), self.GetMotion_Layer2_1.modules(), self.GetMotion_Layer2_2.modules())
+        for v in me_modules:
+            if isinstance(v, nn.Conv2d) :
+                init.zeros_(v.weight)
+                # init.constant_(v.bias, 0.1)
+
+        #--- Motion Compensation ---#
+        # Layer1 (down-scale)
+        self.DeformConv_Layer1_1 = torchvision.ops.DeformConv2d(in_channels=c, out_channels=c, kernel_size=3, padding=1, groups=G, bias=False)
+        self.DeformConv_Layer1_2 = torchvision.ops.DeformConv2d(in_channels=c, out_channels=c, kernel_size=3, padding=1, groups=G, bias=False)
+        self.Conv_Layer1_1 = ConvStandard(numInputCh=c, numOutCh=2*c)
+        self.Conv_Layer1_2 = ConvStandard(numInputCh=c, numOutCh=2*c)
+        self.DownSample_Layer1_1 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.DownSample_Layer1_2 = nn.AvgPool2d(kernel_size=2, stride=2)
+        # Layer2 (down-scale)
+        self.DeformConv_Layer2_1 = torchvision.ops.DeformConv2d(in_channels=2*c, out_channels=2*c, kernel_size=3, padding=1, groups=G, bias=False)
+        self.DeformConv_Layer2_2 = torchvision.ops.DeformConv2d(in_channels=2*c, out_channels=2*c, kernel_size=3, padding=1, groups=G, bias=False)
+        self.Conv_Layer2_1 = ConvStandard(numInputCh=2*c, numOutCh=4*c)
+        self.Conv_Layer2_2 = ConvStandard(numInputCh=2*c, numOutCh=4*c)
+        self.DownSample_Layer2_1 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.DownSample_Layer2_2 = nn.AvgPool2d(kernel_size=2, stride=2)
+        # Layer3 (up-scale)
+        self.Conv_Layer3_first_1 = ConvStandard(numInputCh=4*c, numOutCh=4*c)
+        self.Conv_Layer3_first_2 = ConvStandard(numInputCh=4*c, numOutCh=4*c)
+        self.Conv_Layer3_second_1 = ResBlock(4*c)
+        self.Conv_Layer3_second_2 = ResBlock(4*c)
+        self.Conv_Layer3_third_1 = ConvStandard(numInputCh=4*c, numOutCh=2*c)
+        self.Conv_Layer3_third_2 = ConvStandard(numInputCh=4*c, numOutCh=2*c)
+        self.UpSample_Layer3_1 = UpSampling(numInputCh=2*c)
+        self.UpSample_Layer3_2 = UpSampling(numInputCh=2*c)
+        # Layer4 (up-scale)
+        self.Conv_Layer4_first_1 = ConvStandard(numInputCh=4*c, numOutCh=2*c)
+        self.Conv_Layer4_first_2 = ConvStandard(numInputCh=4*c, numOutCh=2*c)
+        self.Conv_Layer4_second_1 = ResBlock(2*c)
+        self.Conv_Layer4_second_2 = ResBlock(2*c)
+        self.Conv_Layer4_third_1 = ConvStandard(numInputCh=2*c, numOutCh=c)
+        self.Conv_Layer4_third_2 = ConvStandard(numInputCh=2*c, numOutCh=c)
+        self.UpSample_Layer4_1 = UpSampling(numInputCh=c)
+        self.UpSample_Layer4_2 = UpSampling(numInputCh=c)
+
+        #--- Fusion and Refinement ---#
+        self.Fusion = Conv2x(numInputCh=4*c, numMidCh=3*c, numOutCh=2*c)
+        self.Refine = ConvStandard(numInputCh=2*c, numOutCh=c, k=1)
+
+
+    def forward(self, x1, x2):
+        # motion estimation
+        master_motion1          = self.GetMasterMotion1(torch.cat((x1, x2), 1))
+        master_motion_layer1    = self.GetMasterMotion_Layer1(master_motion1)
+        motion_layer1_1         = self.GetMotion_Layer1_1(master_motion_layer1 + master_motion1)
+        motion_layer1_2         = self.GetMotion_Layer1_2(master_motion_layer1 + master_motion1)
+
+        master_motion2          = self.GetMasterMotion2(self.Motion_DownSample(master_motion_layer1 + master_motion1))
+        master_motion_layer2    = self.GetMasterMotion_Layer2(master_motion2)
+        motion_layer2_1         = self.GetMotion_Layer2_1(master_motion_layer2 + master_motion2)
+        motion_layer2_2         = self.GetMotion_Layer2_2(master_motion_layer2 + master_motion2)
+
+        # motion compensation
+        deform_layer1_1         = self.DeformConv_Layer1_1(x1, offset=motion_layer1_1)
+        deform_layer1_2         = self.DeformConv_Layer1_2(x2, offset=motion_layer1_2)
+        conv_layer1_1           = self.Conv_Layer1_1(deform_layer1_1)
+        conv_layer1_2           = self.Conv_Layer1_2(deform_layer1_2)
+        conv_layer1_1           = self.DownSample_Layer1_1(conv_layer1_1)
+        conv_layer1_2           = self.DownSample_Layer1_2(conv_layer1_2)
+
+        deform_layer2_1         = self.DeformConv_Layer2_1(conv_layer1_1, offset=motion_layer2_1)
+        deform_layer2_2         = self.DeformConv_Layer2_2(conv_layer1_2, offset=motion_layer2_2)
+        conv_layer2_1           = self.Conv_Layer2_1(deform_layer2_1)
+        conv_layer2_2           = self.Conv_Layer2_2(deform_layer2_2)
+        conv_layer2_1           = self.DownSample_Layer2_1(conv_layer2_1)
+        conv_layer2_2           = self.DownSample_Layer2_2(conv_layer2_2)
+
+        conv_layer3_first_1     = self.Conv_Layer3_first_1(conv_layer2_1)
+        conv_layer3_first_2     = self.Conv_Layer3_first_2(conv_layer2_2)
+        conv_layer3_second_1    = self.Conv_Layer3_second_1(conv_layer3_first_1)
+        conv_layer3_second_2    = self.Conv_Layer3_second_2(conv_layer3_first_2)
+        conv_layer3_third_1     = self.Conv_Layer3_third_1(conv_layer3_first_1 + conv_layer3_second_1)
+        conv_layer3_third_2     = self.Conv_Layer3_third_2(conv_layer3_first_2 + conv_layer3_second_2)
+        upsample_layer3_1       = self.UpSample_Layer3_1(F.interpolate(conv_layer3_third_1, scale_factor=2.0, mode='bilinear', align_corners=True))
+        upsample_layer3_2       = self.UpSample_Layer3_2(F.interpolate(conv_layer3_third_2, scale_factor=2.0, mode='bilinear', align_corners=True))
+
+        conv_layer4_first_1     = self.Conv_Layer4_first_1(torch.cat((upsample_layer3_1, deform_layer2_1), 1))
+        conv_layer4_first_2     = self.Conv_Layer4_first_2(torch.cat((upsample_layer3_2, deform_layer2_2), 1))
+        conv_layer4_second_1    = self.Conv_Layer4_second_1(conv_layer4_first_1)
+        conv_layer4_second_2    = self.Conv_Layer4_second_2(conv_layer4_first_2)
+        conv_layer4_third_1     = self.Conv_Layer4_third_1(conv_layer4_first_1 + conv_layer4_second_1)
+        conv_layer4_third_2     = self.Conv_Layer4_third_2(conv_layer4_first_2 + conv_layer4_second_2)
+        upsample_layer4_1       = self.UpSample_Layer4_1(F.interpolate(conv_layer4_third_1, scale_factor=2.0, mode='bilinear', align_corners=True))
+        upsample_layer4_2       = self.UpSample_Layer4_2(F.interpolate(conv_layer4_third_2, scale_factor=2.0, mode='bilinear', align_corners=True))
+
+        compensated_1           = torch.cat((upsample_layer4_1, deform_layer1_1), 1)
+        compensated_2           = torch.cat((upsample_layer4_2, deform_layer1_2), 1)
+
+        # fusion and refinement
+        fused                   = self.Fusion(torch.cat((compensated_1, compensated_2), 1))
+        refined                 = self.Refine(fused)
+
+        return refined
 
 
 if __name__ == '__main__':

@@ -35,7 +35,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 import val_me_dnn  # for end-of-epoch mAP
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation
+from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.autobatch import check_train_batch_size
@@ -135,7 +135,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             print('pretrained autoencoder')
             del supp_ckpt
 
-    motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+    motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=1).to(device)
     me_pretrained = False
     if weights_me is not None:
         me_pretrained = weights_me.endswith('.pt')
@@ -325,8 +325,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 T1_tilde = autoencoder(T1, task='enc')
                 T2_tilde = autoencoder(T2, task='enc')
                 Ttrg_tilde = autoencoder(Ttrg, task='enc')
-                T_in = torch.cat((T1_tilde, T2_tilde), 1)
-                Tpred_tilde = motion_estimator(T_in)
+                # T_in = torch.cat((T1_tilde, T2_tilde), 1)
+                # Tpred_tilde = motion_estimator(T_in)
+                Tpred_tilde = motion_estimator(T1_tilde, T2_tilde)
                 Tpred_hat = autoencoder(None, task='dec', bottleneck=Tpred_tilde)
                 Ttrg_hat = autoencoder(None, task='dec', bottleneck=Ttrg_tilde)
                 out_pred, _ = model(None, cut_model=2, T=Tpred_hat)  # second half of the model
@@ -423,7 +424,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 # strip_optimizer(f)  # strip optimizers
                 if f is best:
 
-                    best_motion_estimator = MotionEstimation(opt.autoenc_chs[-1]).to(device)
+                    best_motion_estimator = InterPrediction(opt.autoenc_chs[-1], G=1).to(device)
                     ckpt = torch.load(best)
                     best_motion_estimator.load_state_dict(ckpt['model'])
 
