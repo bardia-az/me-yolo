@@ -232,14 +232,14 @@ class InterPrediction(nn.Module):
         # Layer1
         self.GetMasterMotion1 = ConvStandard(numInputCh=2*c, numOutCh=2*c)
         self.GetMasterMotion_Layer1 = Conv2x(numInputCh=2*c, numMidCh=2*c, numOutCh=2*c)
-        self.GetMotion_Layer1_1 = Conv1x(numInputCh=2*c, numOutCh=c*2*9*G)
-        self.GetMotion_Layer1_2 = Conv1x(numInputCh=2*c, numOutCh=c*2*9*G)
+        self.GetMotion_Layer1_1 = Conv1x(numInputCh=2*c, numOutCh=2*9*G)
+        self.GetMotion_Layer1_2 = Conv1x(numInputCh=2*c, numOutCh=2*9*G)
         # Layer2
         self.Motion_DownSample = nn.AvgPool2d(kernel_size=2, stride=2)
         self.GetMasterMotion2 = ConvStandard(numInputCh=2*c, numOutCh=4*c)
         self.GetMasterMotion_Layer2 = Conv2x(numInputCh=4*c, numMidCh=4*c, numOutCh=4*c)
-        self.GetMotion_Layer2_1 = Conv1x(numInputCh=4*c, numOutCh=(2*c)*2*9*G)
-        self.GetMotion_Layer2_2 = Conv1x(numInputCh=4*c, numOutCh=(2*c)*2*9*G)
+        self.GetMotion_Layer2_1 = Conv1x(numInputCh=4*c, numOutCh=2*9*(2*G))
+        self.GetMotion_Layer2_2 = Conv1x(numInputCh=4*c, numOutCh=2*9*(2*G))
         me_modules = itertools.chain(self.GetMasterMotion1.modules(), self.GetMasterMotion_Layer1.modules(), self.GetMotion_Layer1_1.modules(), self.GetMotion_Layer1_2.modules(),\
                                      self.GetMasterMotion2.modules(), self.GetMasterMotion_Layer2.modules(), self.GetMotion_Layer2_1.modules(), self.GetMotion_Layer2_2.modules())
         for v in me_modules:

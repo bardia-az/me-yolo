@@ -135,7 +135,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             print('pretrained autoencoder')
             del supp_ckpt
 
-    motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=1).to(device)
+    motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
     me_pretrained = False
     if weights_me is not None:
         me_pretrained = weights_me.endswith('.pt')
@@ -424,7 +424,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 # strip_optimizer(f)  # strip optimizers
                 if f is best:
 
-                    best_motion_estimator = InterPrediction(opt.autoenc_chs[-1], G=1).to(device)
+                    best_motion_estimator = InterPrediction(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
                     ckpt = torch.load(best)
                     best_motion_estimator.load_state_dict(ckpt['model'])
 
@@ -494,7 +494,8 @@ def parse_opt(known=False):
     parser.add_argument('--train-list', type=str, default=None, help='txt file containing the training list')
     parser.add_argument('--val-list', type=str, default=None, help='txt file containing the validation list')
     parser.add_argument('--feature-max', type=float, default=20, help='The maximum range of the bottleneck features (for PSNR calculations)')
-    parser.add_argument('--w-features', type=float, default=0.0001, help='The weight of the bottleneck features fidelity in the total loss')
+    parser.add_argument('--w-features', type=float, default=1, help='The weight of the bottleneck features fidelity in the total loss')
+    parser.add_argument('--deform-G', type=int, default=1, help='number of groups in deformable convolution layers')
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
     return opt
