@@ -113,8 +113,9 @@ def get_tensors(img, model, autoencoder, lossless):
 def motion_estimation(ref_tensors, model):
     if model is not None:
         _, _, ch_h, ch_w = ref_tensors.shape
-        T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
-        return model(T_in[None, :])
+        # T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
+        T_in = ref_tensors.detach().clone()
+        return model(T_in[0, ...], T_in[1, ...])
     else:
         return torch.zeros(1, device=ref_tensors.device)
 
