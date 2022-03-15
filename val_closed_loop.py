@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation
+from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction
 from utils.datasets import create_dataloader
 from utils.general import (LOGGER, StatCalculator, check_file, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
@@ -211,7 +211,7 @@ def val_closed_loop(opt,
     motion_estimator = None
     if weights_me is not None:
         assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
-        motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+        motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
         me_ckpt = torch.load(weights_me, map_location=device)
         motion_estimator.load_state_dict(me_ckpt['model'])
         print('motion estimator loaded successfully')
@@ -589,6 +589,7 @@ def parse_opt():
     parser.add_argument('--lossless', action='store_true', help='This flag indicates evaluation without compression')
     parser.add_argument('--tensor-video', type=str, default=None, help='the path of the tiled tensor video')
     parser.add_argument('--res-per-frame', action='store_true', help='save the mAP results per frame')
+    parser.add_argument('--deform-G', type=int, default=8, help='number of groups in deformable convolution layers')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
