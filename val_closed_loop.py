@@ -115,7 +115,7 @@ def motion_estimation(ref_tensors, model):
         _, _, ch_h, ch_w = ref_tensors.shape
         # T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
         T_in = ref_tensors.detach().clone()
-        return model(T_in[0, ...], T_in[1, ...])
+        return model(T_in[0, ...].unsqueeze(0), T_in[1, ...].unsqueeze(0))
     else:
         return torch.zeros(1, device=ref_tensors.device)
 
@@ -213,6 +213,7 @@ def val_closed_loop(opt,
     if weights_me is not None:
         assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
         motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+        # motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
         me_ckpt = torch.load(weights_me, map_location=device)
         motion_estimator.load_state_dict(me_ckpt['model'])
         print('motion estimator loaded successfully')
