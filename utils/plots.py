@@ -16,6 +16,7 @@ import pandas as pd
 import seaborn as sn
 import torch
 from PIL import Image, ImageDraw, ImageFont
+import pyimof
 
 from utils.general import is_ascii, is_chinese, user_config_dir, xywh2xyxy, xyxy2xywh
 from utils.metrics import fitness
@@ -467,10 +468,32 @@ def visualize_one_channel(x, n=0, save_dir=Path('runs/detect/exp'), s=''):
     """
     f = f"channel{n}_{s}.png"  # filename
 
-    img = plt.imshow(x[0,n,:,:].cpu(), cmap='gray')
+    img = plt.imshow(x[0,n,:,:].cpu(), cmap='gray', vmin=-0.3, vmax=2)
     # plt.colorbar(img)
     plt.axis('off')
 
     print(f'Saving {save_dir / f}')
     plt.savefig(save_dir / f, dpi=75, bbox_inches='tight')
     plt.close()
+
+def motion_field_visualization(x, g=64, g_h=8, save_dir=Path('runs/detect/exp'), l=1):
+    b, c, h, w = x.shape
+    # x = x.reshape(b,2,g,3,3,h,w)
+    x = x.reshape(b,g,2,3,3,h,w)
+    for i in range(3):
+        for j in range(3):
+            motion_field = x[:,:,:,i,j,:,:].squeeze()
+            # motion_field = motion_field.reshape(b,2,8,-1,h,w)
+            # motion_field = motion_field.permute(0,2,4,3,5,1)
+            # motion_field = motion_field.reshape(b,8*h,-1,2)
+            motion_field = motion_field.reshape(b,g_h,-1,2,h,w)
+            motion_field = motion_field.permute(0,1,4,2,5,3)
+            motion_field = motion_field.reshape(b,g_h*h,-1,2)
+
+            motion_field = motion_field.numpy()
+
+            pyimof.display.plot(motion_field[0, ..., 0], motion_field[0, ..., 1], cmap='hsv')
+            # plt.show()
+            f = f"layer_{l}_y{i}_x{j}.png"  # filename
+            plt.savefig(save_dir / f, dpi=200, bbox_inches='tight')
+            plt.close()

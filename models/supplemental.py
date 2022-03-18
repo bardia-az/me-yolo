@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 # ROOT = ROOT.relative_to(Path.cwd())  # relative
 
 from models.common import *
-from utils.plots import feature_visualization, visualize_one_channel
+from utils.plots import feature_visualization, visualize_one_channel, motion_field_visualization
 import torch.nn.functional as F
 import torch.nn.init as init
 import torchvision
@@ -75,6 +75,8 @@ class AutoEncoder(nn.Module):
 class MotionEstimation(nn.Module):
     def __init__(self, in_channels = 2):
         super(MotionEstimation, self).__init__()
+
+        self.c = in_channels
 
         def EstimateOffsets(numInputCh, numMidCh, numOutCh):
             return nn.Sequential(
@@ -149,7 +151,7 @@ class MotionEstimation(nn.Module):
         self.Conv1_u      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*4, numOutCh=in_channels)
 
 #   def forward(self, x1, x2):
-    def forward(self, x):
+    def forward(self, x, visualize=False):
         # x = torch.cat((x1, x2), 1)
         # print(x.shape)
         off1_d      = self.EstOff1_d(x)
@@ -191,6 +193,11 @@ class MotionEstimation(nn.Module):
         # compns1_u   = self.MoCmpns1_u(input=usmpl1+conv1_d, offset=off1_u)
         # conv1_u     = self.Conv1_u(compns1_u)
 
+        if visualize:
+            motion_field_visualization(off1_d, g=self.c, g_h=8, save_dir=visualize, l=1)
+            motion_field_visualization(off2_d, g=self.c, g_h=8, save_dir=visualize, l=2)
+            motion_field_visualization(off3_d, g=self.c, g_h=8, save_dir=visualize, l=3)
+
         return conv1_u
 
 
@@ -227,6 +234,7 @@ class InterPrediction(nn.Module):
                 nn.SiLU(),
             )
 
+        self.g = G
         c = in_channels
         #--- Motion Estimation ---#
         # Layer1
@@ -286,7 +294,7 @@ class InterPrediction(nn.Module):
         self.Refine = ConvStandard(numInputCh=2*c, numOutCh=c, k=1)
 
 
-    def forward(self, x1, x2):
+    def forward(self, x1, x2, visualize=False):
         # motion estimation
         master_motion1          = self.GetMasterMotion1(torch.cat((x1, x2), 1))
         master_motion_layer1    = self.GetMasterMotion_Layer1(master_motion1)
@@ -337,6 +345,12 @@ class InterPrediction(nn.Module):
         # fusion and refinement
         fused                   = self.Fusion(torch.cat((compensated_1, compensated_2), 1))
         refined                 = self.Refine(fused)
+
+        if visualize:
+            motion_field_visualization(motion_layer1_1, g=self.g, g_h=4, save_dir=visualize, l='1_1')
+            motion_field_visualization(motion_layer1_2, g=self.g, g_h=4, save_dir=visualize, l='1_2')
+            motion_field_visualization(motion_layer2_1, g=2*self.g, g_h=4, save_dir=visualize, l='2_1')
+            motion_field_visualization(motion_layer2_2, g=2*self.g, g_h=4, save_dir=visualize, l='2_2')
 
         return refined
 
