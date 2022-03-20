@@ -35,7 +35,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 import val_me_dnn  # for end-of-epoch mAP
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction
+from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction, InterPrediction_new1, InterPrediction_new2
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.autobatch import check_train_batch_size
@@ -135,7 +135,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             print('pretrained autoencoder')
             del supp_ckpt
 
-    motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+    # motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+    motion_estimator = InterPrediction_new1(c=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+    # motion_estimator = InterPrediction_new2(c=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
     me_pretrained = False
     if weights_me is not None:
         me_pretrained = weights_me.endswith('.pt')
@@ -424,7 +426,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 # strip_optimizer(f)  # strip optimizers
                 if f is best:
 
-                    best_motion_estimator = InterPrediction(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+                    # best_motion_estimator = InterPrediction(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+                    best_motion_estimator = InterPrediction_new1(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+                    # best_motion_estimator = InterPrediction_new2(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
                     ckpt = torch.load(best)
                     best_motion_estimator.load_state_dict(ckpt['model'])
 

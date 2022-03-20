@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from turtle import forward
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]  # YOLOv5 root directory
@@ -74,7 +75,7 @@ class AutoEncoder(nn.Module):
 ################## Motion Estimation ######################
 class MotionEstimation(nn.Module):
     def __init__(self, in_channels = 2):
-        super(MotionEstimation, self).__init__()
+        super().__init__()
 
         self.c = in_channels
 
@@ -200,11 +201,10 @@ class MotionEstimation(nn.Module):
 
         return conv1_u
 
-
-################## Motion Compensation ######################
+################## Inter-Prediction ######################
 class InterPrediction(nn.Module):
     def __init__(self, in_channels=2, G=1):     # number of input channels, number of Groups in doform_conv
-        super(InterPrediction, self).__init__()
+        super().__init__()
 
         def Conv2x(numInputCh, numMidCh, numOutCh, k=3):
             return nn.Sequential(
@@ -353,6 +353,255 @@ class InterPrediction(nn.Module):
             motion_field_visualization(motion_layer2_2, g=2*self.g, g_h=4, save_dir=visualize, l='2_2')
 
         return refined
+
+
+
+################## Inter-Prediction new ######################
+def Conv2x(numInputCh, numMidCh, numOutCh, k=3):
+    return nn.Sequential(
+        nn.Conv2d(in_channels=numInputCh,  out_channels=numMidCh, kernel_size=k, stride=1, padding=k//2),
+        nn.Conv2d(in_channels=numMidCh,  out_channels=numOutCh , kernel_size=k, stride=1, padding=k//2),
+    )
+def Conv1x(numInputCh, numOutCh, k=3):
+    return nn.Conv2d(in_channels=numInputCh,  out_channels=numOutCh, kernel_size=k, stride=1, padding=k//2)
+
+def ConvStandard(numInputCh, numOutCh, k=3, act=nn.LeakyReLU()):
+    return nn.Sequential(
+        nn.Conv2d(in_channels=numInputCh,  out_channels=numOutCh, kernel_size=k, stride=1, padding=k//2),
+        nn.BatchNorm2d(numOutCh),
+        act,
+    )
+
+def UpSampling(numInputCh, numOutCh, k=3, act=nn.LeakyReLU()):
+    return nn.Sequential(
+        nn.Conv2d(in_channels=numInputCh, out_channels=numOutCh, kernel_size=k, stride=1, padding=k//2),
+        act,
+    )
+
+class ResBlock(nn.Module):
+    def __init__(self, channels, k=3, act=nn.LeakyReLU()):
+        super().__init__()
+        self.Conv1 = nn.Conv2d(in_channels=channels,  out_channels=channels, kernel_size=k, stride=1, padding=k//2)
+        self.Conv2 = nn.Conv2d(in_channels=channels,  out_channels=channels, kernel_size=k, stride=1, padding=k//2)
+        self.act = act
+
+    def forward(self, x):
+        y = x
+        return (x + self.Conv2(self.act(self.Conv1(y))))
+
+class PreProcessing(nn.Module):
+    def __init__(self, c, k=3):
+        super().__init__()
+        self.blk1 = ResBlock(c, k=k)
+        self.blk2 = ResBlock(c, k=k)
+        self.blk3 = ConvStandard(c, c, k=k)
+
+    def forward(self, x):
+        return self.blk3(self.blk2(self.blk1(x)))
+
+class MotionEstimation(nn.Module):
+    def __init__(self, c):
+        super().__init__()
+
+        self.layer1_blk1 = ResBlock(c)
+        self.layer1_blk2 = ResBlock(c)
+        self.layer1_blk3 = ConvStandard(c, 2*c)
+        self.layer1_blk4 = nn.AvgPool2d(kernel_size=2, stride=2)
+
+        self.layer2_blk1 = ResBlock(2*c)
+        self.layer2_blk2 = ResBlock(2*c)
+        self.layer2_blk3 = ConvStandard(2*c, 4*c)
+        self.layer2_blk4 = nn.AvgPool2d(kernel_size=2, stride=2)
+
+        self.layer3_blk1 = ResBlock(4*c)
+        self.layer3_blk2 = ConvStandard(4*c, 4*c)
+        self.layer3_blk3 = Conv2x(4*c, 4*c, 4*c)
+
+        self.layer4_blk1 = UpSampling(4*c, 3*c)
+        self.layer4_blk2 = ResBlock(5*c)
+        self.layer4_blk3 = ConvStandard(5*c, 3*c)
+        self.layer4_blk4 = Conv2x(3*c, 3*c, 3*c)
+
+        self.layer5_blk1 = UpSampling(3*c, 2*c)
+        self.layer5_blk2 = ResBlock(3*c)
+        self.layer5_blk3 = ConvStandard(3*c, 2*c)
+        self.layer5_blk4 = Conv2x(2*c, 2*c, 2*c)
+
+    def forward(self, x):
+        x1_1 = self.layer1_blk1(x)
+        branch1 = self.layer1_blk2(x1_1)
+        x1_2 = self.layer1_blk3(branch1)
+        x1_2 = self.layer1_blk4(x1_2)
+
+        x2_1 = self.layer2_blk1(x1_2)
+        branch2 = self.layer2_blk2(x2_1)
+        x2_2 = self.layer2_blk3(branch2)
+        x2_2 = self.layer2_blk4(x2_2)
+
+        x3_1 = self.layer3_blk1(x2_2)
+        x3_1 = self.layer3_blk2(x3_1)
+        x3_2 = self.layer3_blk3(x3_1)
+        output1 = x3_1 + x3_2
+
+        x4_1 = self.layer4_blk1(F.interpolate(output1, scale_factor=2.0, mode='bilinear', align_corners=True))
+        x4_2 = self.layer4_blk2(torch.cat((x4_1, branch2),1))
+        x4_2 = self.layer4_blk3(x4_2)
+        x4_3 = self.layer4_blk4(x4_2)
+        output2 = x4_2 + x4_3
+
+        x5_1 = self.layer5_blk1(F.interpolate(output2, scale_factor=2.0, mode='bilinear', align_corners=True))
+        x5_2 = self.layer5_blk2(torch.cat((x5_1, branch1),1))
+        x5_2 = self.layer5_blk3(x5_2)
+        x5_3 = self.layer5_blk4(x5_2)
+        output3 = x5_2 + x5_3
+
+        return output1, output2, output3
+
+class MotionCompensation(nn.Module):
+    def __init__(self, c, G=1):
+        super().__init__()
+
+        self.layer1_blk1 = ResBlock(c)
+        self.layer1_blk2 = ResBlock(c)
+        self.layer1_blk3 = ConvStandard(c, 2*c)
+        self.layer1_blk4 = nn.AvgPool2d(kernel_size=2, stride=2)
+
+        self.layer2_blk1 = ResBlock(2*c)
+        self.layer2_blk2 = ResBlock(2*c)
+        self.layer2_blk3 = ConvStandard(2*c, 4*c)
+        self.layer2_blk4 = nn.AvgPool2d(kernel_size=2, stride=2)
+
+        self.layer3_blk1 = ResBlock(4*c)
+        self.layer3_blk2 = torchvision.ops.DeformConv2d(in_channels=4*c, out_channels=4*c, kernel_size=3, padding=1, groups=G, bias=False)
+        self.layer3_blk3 = ConvStandard(4*c, 2*c)
+        self.layer3_blk4 = UpSampling(2*c, c)
+
+        self.layer4_blk1 = ResBlock(3*c)
+        self.layer4_blk2 = torchvision.ops.DeformConv2d(in_channels=3*c, out_channels=3*c, kernel_size=3, padding=1, groups=G, bias=False)
+        self.layer4_blk3 = ConvStandard(3*c, 2*c)
+        self.layer4_blk4 = UpSampling(2*c, c)
+
+        self.layer5_blk1 = ResBlock(2*c)
+        self.layer5_blk2 = torchvision.ops.DeformConv2d(in_channels=2*c, out_channels=2*c, kernel_size=3, padding=1, groups=G, bias=False)
+        self.layer5_blk3 = ConvStandard(2*c, c)
+
+    def forward(self, x, off1, off2, off3):
+        x1 = self.layer1_blk1(x)
+        x1 = self.layer1_blk2(x1)
+        x1 = self.layer1_blk3(x1)
+        x1 = self.layer1_blk4(x1)
+
+        x2 = self.layer2_blk1(x1)
+        x2 = self.layer2_blk2(x2)
+        x2 = self.layer2_blk3(x2)
+        x2 = self.layer2_blk4(x2)
+
+        x3 = self.layer3_blk1(x2)
+        x3 = self.layer3_blk2(x3, offset=off1)
+        x3 = self.layer3_blk3(x3)
+        x3 = self.layer3_blk4(F.interpolate(x3, scale_factor=2.0, mode='bilinear', align_corners=True))
+
+        x4 = self.layer4_blk1(torch.cat((x1, x3),1))
+        x4 = self.layer4_blk2(x4, offset=off2)
+        x4 = self.layer4_blk3(x4)
+        x4 = self.layer4_blk4(F.interpolate(x4, scale_factor=2.0, mode='bilinear', align_corners=True))
+
+        x5 = self.layer5_blk1(torch.cat((x, x4),1))
+        x5 = self.layer5_blk2(x5, offset=off3)
+        x5 = self.layer5_blk3(x5)
+
+        return x5
+
+class Refinement(nn.Module):
+    def __init__(self, c):
+        super().__init__()
+        self.blk1 = ResBlock(c)
+        self.blk2 = Conv1x(c, c, k=3)
+        self.blk3 = ConvStandard(c, c//2, k=1)
+
+    def forward(self, x):
+        x = self.blk1(x)
+        x = self.blk2(x)
+        x = self.blk3(x)
+        return x
+
+class InterPrediction_new1(nn.Module):
+    def __init__(self, c, G) -> None:
+        super().__init__()
+        self.g = G
+        self.pre_processing = PreProcessing(c)
+        self.me = MotionEstimation(2*c)
+        self.conv1_1 = Conv1x(8*c, 4*G*2*9)
+        self.conv1_2 = Conv1x(8*c, 4*G*2*9)
+        self.conv2_1 = Conv1x(6*c, 3*G*2*9)
+        self.conv2_2 = Conv1x(6*c, 3*G*2*9)
+        self.conv3_1 = Conv1x(4*c, 2*G*2*9)
+        self.conv3_2 = Conv1x(4*c, 2*G*2*9)
+        self.mc = MotionCompensation(c, G=G)
+        self.refinement = Refinement(2*c)
+
+    def forward(self, x1, x2, visualize=False):
+        x1_refined = self.pre_processing(x1)
+        x2_refined = self.pre_processing(x2)
+        x_me = torch.cat((x1_refined, x2_refined), 1)
+        master_off1, master_off2, master_off3 = self.me(x_me)
+        off1_1 = self.conv1_1(master_off1)
+        off1_2 = self.conv1_2(master_off1)
+        off2_1 = self.conv2_1(master_off2)
+        off2_2 = self.conv2_2(master_off2)
+        off3_1 = self.conv3_1(master_off3)
+        off3_2 = self.conv3_2(master_off3)
+        x_cmp1 = self.mc(x1, off1=off1_1, off2=off2_1, off3=off3_1)
+        x_cmp2 = self.mc(x2, off1=off1_2, off2=off2_2, off3=off3_2)
+        x_out = self.refinement(torch.cat((x_cmp1, x_cmp2), 1))
+        if visualize:
+            motion_field_visualization(off1_1, g=self.g, g_h=4, save_dir=visualize, l='1_1')
+            motion_field_visualization(off1_2, g=self.g, g_h=4, save_dir=visualize, l='1_2')
+            motion_field_visualization(off2_1, g=self.g, g_h=4, save_dir=visualize, l='2_1')
+            motion_field_visualization(off2_2, g=self.g, g_h=4, save_dir=visualize, l='2_2')
+            motion_field_visualization(off3_1, g=self.g, g_h=4, save_dir=visualize, l='3_1')
+            motion_field_visualization(off3_2, g=self.g, g_h=4, save_dir=visualize, l='3_2')
+        return x_out
+
+class InterPrediction_new2(nn.Module):
+    def __init__(self, c, G) -> None:
+        super().__init__()
+        self.pre_processing = PreProcessing(c)
+        self.me = MotionEstimation(2*c)
+        self.conv1_1 = Conv1x(8*c, 4*G*2*9)
+        self.conv1_2 = Conv1x(8*c, 4*G*2*9)
+        self.conv2_1 = Conv1x(6*c, 3*G*2*9)
+        self.conv2_2 = Conv1x(6*c, 3*G*2*9)
+        self.conv3_1 = Conv1x(4*c, 2*G*2*9)
+        self.conv3_2 = Conv1x(4*c, 2*G*2*9)
+        self.mc1 = MotionCompensation(c, G=G)
+        self.mc2 = MotionCompensation(c, G=G)
+        self.refinement = Refinement(2*c)
+
+    def forward(self, x1, x2, visualize=False):
+        x1_refined = self.pre_processing(x1)
+        x2_refined = self.pre_processing(x2)
+        x_me = torch.cat((x1_refined, x2_refined), 1)
+        master_off1, master_off2, master_off3 = self.me(x_me)
+        off1_1 = self.conv1_1(master_off1)
+        off1_2 = self.conv1_2(master_off1)
+        off2_1 = self.conv2_1(master_off2)
+        off2_2 = self.conv2_2(master_off2)
+        off3_1 = self.conv3_1(master_off3)
+        off3_2 = self.conv3_2(master_off3)
+        x_cmp1 = self.mc1(x1, off1=off1_1, off2=off2_1, off3=off3_1)
+        x_cmp2 = self.mc2(x2, off1=off1_2, off2=off2_2, off3=off3_2)
+        x_out = self.refinement(torch.cat((x_cmp1, x_cmp2), 1))
+        if visualize:
+            motion_field_visualization(off1_1, g=self.g, g_h=4, save_dir=visualize, l='1_1')
+            motion_field_visualization(off1_2, g=self.g, g_h=4, save_dir=visualize, l='1_2')
+            motion_field_visualization(off2_1, g=self.g, g_h=4, save_dir=visualize, l='2_1')
+            motion_field_visualization(off2_2, g=self.g, g_h=4, save_dir=visualize, l='2_2')
+            motion_field_visualization(off3_1, g=self.g, g_h=4, save_dir=visualize, l='3_1')
+            motion_field_visualization(off3_2, g=self.g, g_h=4, save_dir=visualize, l='3_2')
+        return x_out
+
+
 
 
 if __name__ == '__main__':
