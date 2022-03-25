@@ -46,7 +46,7 @@ from utils.general import (LOGGER, check_dataset, check_file, check_git_status, 
                            print_args, print_mutation, strip_optimizer, print_args_to_file)
 from utils.downloads import attempt_download
 from utils.loss import ComputeLoss, ComputeLossME
-from utils.plots import plot_labels, plot_evolve
+# from utils.plots import plot_labels, plot_evolve
 from utils.torch_utils import EarlyStopping, ModelEMA, de_parallel, select_device, torch_distributed_zero_first
 from utils.loggers.wandb.wandb_utils import check_wandb_resume
 from utils.metrics import fitness

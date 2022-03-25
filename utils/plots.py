@@ -16,7 +16,6 @@ import pandas as pd
 import seaborn as sn
 import torch
 from PIL import Image, ImageDraw, ImageFont
-import pyimof
 
 from utils.general import is_ascii, is_chinese, user_config_dir, xywh2xyxy, xyxy2xywh
 from utils.metrics import fitness
@@ -477,6 +476,8 @@ def visualize_one_channel(x, n=0, save_dir=Path('runs/detect/exp'), s=''):
     plt.close()
 
 def motion_field_visualization(x, g=64, g_h=8, save_dir=Path('runs/detect/exp'), l=1):
+    import pyimof
+    
     b, c, h, w = x.shape
     # x = x.reshape(b,2,g,3,3,h,w)
     x = x.reshape(b,g,2,3,3,h,w)
