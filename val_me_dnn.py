@@ -161,7 +161,6 @@ def run(data,
         print('autoencoder loaded successfully')
         del supp_ckpt
         autoencoder.half() if half else autoencoder.float()
-        autoencoder.eval()
 
         assert weights_me is not None, 'motion estimator weights should be available'
         assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
@@ -171,10 +170,11 @@ def run(data,
         print('motion estimator loaded successfully')
         del me_ckpt
         motion_estimator.half() if half else autoencoder.float()
-        motion_estimator.eval()
 
     # Configure
     model.eval()
+    motion_estimator.eval()
+    autoencoder.eval()
     # is_coco = isinstance(data.get('val'), str) and data['val'].endswith('coco/val2017.txt')  # COCO dataset
     # nc = 1 if single_cls else int(data['nc'])  # number of classes
     # iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95

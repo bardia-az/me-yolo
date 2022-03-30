@@ -518,7 +518,7 @@ def main(opt, callbacks=Callbacks()):
         assert os.path.isfile(ckpt), 'ERROR: --resume checkpoint does not exist'
         with open(Path(ckpt).parent.parent / 'opt.yaml', errors='ignore') as f:
             opt = argparse.Namespace(**yaml.safe_load(f))  # replace
-        opt.weights, opt.resume = '', ckpt, True  # reinstate
+        opt.weights, opt.resume = ckpt, True  # reinstate
         LOGGER.info(f'Resuming training from {ckpt}')
     else:
         opt.data, opt.hyp, opt.weights, opt.project = \
