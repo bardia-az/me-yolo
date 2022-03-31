@@ -34,7 +34,8 @@ class Callbacks:
 
         'teardown': [],
 
-        'on_fit_epoch_end_me': []
+        'on_fit_epoch_end_me': [],
+        'on_fit_epoch_end_e2e': []
 
     }
 
