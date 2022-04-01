@@ -136,7 +136,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             del supp_ckpt
 
     # motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
-    motion_estimator = InterPrediction_new1(c=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+    motion_estimator = InterPrediction_new2(c=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
     # motion_estimator = InterPrediction_new2(c=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
     me_pretrained = False
     if weights_me is not None:
@@ -427,7 +427,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 if f is best:
 
                     # best_motion_estimator = InterPrediction(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
-                    best_motion_estimator = InterPrediction_new1(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+                    best_motion_estimator = InterPrediction_new2(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
                     # best_motion_estimator = InterPrediction_new2(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
                     ckpt = torch.load(best)
                     best_motion_estimator.load_state_dict(ckpt['model'])
