@@ -80,6 +80,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     if isinstance(hyp, str):
         with open(hyp, errors='ignore') as f:
             hyp = yaml.safe_load(f)  # load hyps dict
+    hyp['lr0'] = opt.lr0
+    hyp['lrf'] = opt.lrf
     LOGGER.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
 
     # Save run settings
@@ -500,6 +502,8 @@ def parse_opt(known=False):
     parser.add_argument('--feature-max', type=float, default=20, help='The maximum range of the bottleneck features (for PSNR calculations)')
     parser.add_argument('--w-features', type=float, default=1, help='The weight of the bottleneck features fidelity in the total loss')
     parser.add_argument('--deform-G', type=int, default=1, help='number of groups in deformable convolution layers')
+    parser.add_argument('--lr0', type=float, default=0.01, help='initial learning rate')
+    parser.add_argument('--lrf', type=float, default=0.2, help='final OneCycleLR learning rate (lr0 * lrf)')
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
     return opt
