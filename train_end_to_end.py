@@ -60,6 +60,8 @@ WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 
 print(LOCAL_RANK, RANK, WORLD_SIZE)
 
+torch.autograd.set_detect_anomaly(True)
+
 
 def configure_optimizers(net: nn.Module, args):
     """Separate parameters for the main optimizer and the auxiliary optimizer and the yolo optimizer.
@@ -259,7 +261,6 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
     t0 = time.time()
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
-    scaler = amp.GradScaler(enabled=cuda)
     stopper = EarlyStopping(patience=opt.patience)
     compute_loss = ComputeLoss(model)  # init loss class
     criterion = RateDistortionLoss(lmbda=opt.lmbda, return_details=True)
@@ -285,29 +286,28 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
 
             # Forward
-            with amp.autocast(enabled=cuda):
-                T = model(imgs, cut_model=1)  # first half of the model
-                out_net = net(T)
-                T_hat = out_net['x_hat'][0]
-                pred = model(None, cut_model=2, T=T_hat)[1]  # second half of the model
+            T = model(imgs, cut_model=1)  # first half of the model
+            T = (T + 1) / 20
+            out_net = net(T)
+            T_hat = out_net['x_hat'][0]
+            pred = model(None, cut_model=2, T=T_hat*20-1)[1]  # second half of the model
 
-                out_criterion = criterion(out_net, [T])
-                loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                
-                loss = out_criterion["loss"] + opt.w_obj_det * loss_o
-                aux_loss = compute_aux_loss(net.aux_loss(), backward=True)
-                loss_items = torch.cat((loss_items, out_criterion["distortion"].unsqueeze(0), out_criterion["bpp_loss"].unsqueeze(0), out_criterion["loss"].unsqueeze(0), aux_loss.unsqueeze(0)))
-                if RANK != -1:
-                    loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
+            out_criterion = criterion(out_net, [T])
+            loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+            
+            loss = out_criterion["loss"] + opt.w_obj_det * loss_o
+            aux_loss = compute_aux_loss(net.aux_loss(), backward=True)
+            loss_items = torch.cat((loss_items, out_criterion["distortion"].unsqueeze(0), out_criterion["bpp_loss"].unsqueeze(0), out_criterion["loss"].unsqueeze(0), aux_loss.unsqueeze(0)))
+            if RANK != -1:
+                loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
 
             # Backward
-            scaler.scale(loss).backward()
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1)
 
             # Optimize
             aux_optimizer.step()
-            scaler.step(encoder_optimizer)  # optimizer.step
-            scaler.update()
+            encoder_optimizer.step  # optimizer.step
             if ema:
                 ema.update(model)
 
@@ -339,6 +339,8 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
                                                       intra_encoder=deepcopy(net).half(),
                                                       criterion=criterion)
 
+            # results : mp, mr, map50, map, box, obj, cls, mse_loss, bpp_loss, enc_loss, aux_loss
+            loss = out_criterion["loss"] + opt.w_obj_det * loss_o
             encoder_scheduler.step(results[9])
 
             # Update best mAP
