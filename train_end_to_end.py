@@ -184,7 +184,7 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
     imgsz = check_img_size(opt.imgsz, gs, floor=gs)  # verify imgsz is gs-multiple
 
     # Scheduler
-    encoder_scheduler = lr_scheduler.ReduceLROnPlateau(encoder_optimizer, "min")
+    encoder_scheduler = lr_scheduler.ReduceLROnPlateau(encoder_optimizer, "min", patience=4)
 
     # EMA
     ema = ModelEMA(model) if RANK in [-1, 0] else None
