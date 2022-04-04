@@ -294,7 +294,7 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
             out_criterion = criterion(out_net, [T])
             loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
             
-            loss = out_criterion["loss"] + opt.w_obj_det * loss_o
+            loss = (1-opt.w_obj_det)*out_criterion["loss"] + opt.w_obj_det*loss_o
             aux_loss = compute_aux_loss(net.aux_loss(), backward=True)
             loss_items = torch.cat((loss_items, loss_o, loss, out_criterion["distortion"].unsqueeze(0), out_criterion["bpp_loss"].unsqueeze(0), out_criterion["loss"].unsqueeze(0), aux_loss.unsqueeze(0)))
             if RANK != -1:
@@ -339,7 +339,7 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
                                                       criterion=criterion)
 
             # results : mp, mr, map50, map, box, obj, cls, loss_o, mse_loss, bpp_loss, enc_loss, aux_loss
-            loss_val = results[10] + opt.w_obj_det * results[7]
+            loss_val = (1-opt.w_obj_det)*results[10] + opt.w_obj_det*results[7]
             encoder_scheduler.step(loss_val)
             results += (loss_val,)
 
@@ -413,10 +413,10 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
                                                        criterion=criterion)
 
                     # results : mp, mr, map50, map, box, obj, cls, loss_o, mse_loss, bpp_loss, enc_loss, aux_loss
-                    loss_val = results[10] + opt.w_obj_det * results[7]
+                    loss_val = (1-opt.w_obj_det)*results[10] + opt.w_obj_det*results[7]
                     results += (loss_val,)
                     if is_coco:
-                        callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + [encoder_optimizer.param_groups[0]['lr']], epoch, best_fitness, fi)
+                        callbacks.run('on_fit_epoch_end_e2e', list(mloss) + list(results) + [encoder_optimizer.param_groups[0]['lr']], epoch, best_fitness, fi)
 
         callbacks.run('on_train_end', last, best, plots, epoch, results)
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}")
