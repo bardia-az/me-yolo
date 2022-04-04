@@ -260,7 +260,8 @@ def run(data,
 
             else:
                 T = model(img, augment=augment, cut_model=1)  # inference and training outputs
-                stats_bottleneck.update_stats(T.detach().clone().cpu().numpy())
+                if track_stats:
+                    stats_bottleneck.update_stats(T.detach().clone().cpu().numpy())
                 out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
                 # if(cut_model==1):
                 #     T = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
