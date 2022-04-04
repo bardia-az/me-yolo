@@ -50,7 +50,7 @@ from utils.loss import ComputeLoss, RateDistortionLoss, compute_aux_loss
 from utils.plots import plot_labels, plot_evolve
 from utils.torch_utils import EarlyStopping, ModelEMA, de_parallel, select_device, torch_distributed_zero_first
 from utils.loggers.wandb.wandb_utils import check_wandb_resume
-from utils.metrics import fitness
+from utils.metrics import fitness_e2e
 from utils.loggers import Loggers
 from utils.callbacks import Callbacks
 
@@ -59,8 +59,6 @@ RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 
 print(LOCAL_RANK, RANK, WORLD_SIZE)
-
-torch.autograd.set_detect_anomaly(True)
 
 
 def configure_optimizers(net: nn.Module, args):
@@ -192,7 +190,7 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
     ema = ModelEMA(model) if RANK in [-1, 0] else None
 
     # Resume
-    start_epoch, best_fitness = 0, 0.0
+    start_epoch, best_fitness = 0, -100.0
     if resume:
         # Optimizer
         best_fitness = ckpt['best_fitness']
@@ -260,7 +258,7 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
     # Start training
     t0 = time.time()
     maps = np.zeros(nc)  # mAP per class
-    results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
+    # results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     stopper = EarlyStopping(patience=opt.patience)
     compute_loss = ComputeLoss(model)  # init loss class
     criterion = RateDistortionLoss(lmbda=opt.lmbda, return_details=True)
@@ -272,11 +270,11 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
         model.eval()
         net.train()
 
-        mloss = torch.zeros(7, device=device)  # mean losses
+        mloss = torch.zeros(9, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
-        LOGGER.info(('\n' + '%10s' * 11) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'fid', 'bpp', 'enc', 'aux', 'labels', 'img_size'))
+        LOGGER.info(('\n' + '%10s' * 13) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'obj_tot', 'tot', 'fid', 'bpp', 'enc', 'aux', 'labels', 'img_size'))
         if RANK in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         aux_optimizer.zero_grad()
@@ -287,17 +285,18 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
 
             # Forward
             T = model(imgs, cut_model=1)  # first half of the model
-            T = (T + 1) / 20
+            # T = (T + 1) / 20
             out_net = net(T)
             T_hat = out_net['x_hat'][0]
-            pred = model(None, cut_model=2, T=T_hat*20-1)[1]  # second half of the model
+            # pred = model(None, cut_model=2, T=T_hat*20-1)[1]  # second half of the model
+            pred = model(None, cut_model=2, T=T_hat)[1]  # second half of the model
 
             out_criterion = criterion(out_net, [T])
             loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
             
             loss = out_criterion["loss"] + opt.w_obj_det * loss_o
             aux_loss = compute_aux_loss(net.aux_loss(), backward=True)
-            loss_items = torch.cat((loss_items, out_criterion["distortion"].unsqueeze(0), out_criterion["bpp_loss"].unsqueeze(0), out_criterion["loss"].unsqueeze(0), aux_loss.unsqueeze(0)))
+            loss_items = torch.cat((loss_items, loss_o, loss, out_criterion["distortion"].unsqueeze(0), out_criterion["bpp_loss"].unsqueeze(0), out_criterion["loss"].unsqueeze(0), aux_loss.unsqueeze(0)))
             if RANK != -1:
                 loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
 
@@ -315,7 +314,7 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
             if RANK in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%10s' * 2 + '%10.4g' * 9) % (
+                pbar.set_description(('%10s' * 2 + '%10.4g' * 11) % (
                     f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
                 callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
             # end batch ------------------------------------------------------------------------------------------------
@@ -339,12 +338,13 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
                                                       intra_encoder=deepcopy(net).half(),
                                                       criterion=criterion)
 
-            # results : mp, mr, map50, map, box, obj, cls, mse_loss, bpp_loss, enc_loss, aux_loss
-            loss = out_criterion["loss"] + opt.w_obj_det * loss_o
-            encoder_scheduler.step(results[9])
+            # results : mp, mr, map50, map, box, obj, cls, loss_o, mse_loss, bpp_loss, enc_loss, aux_loss
+            loss_val = results[10] + opt.w_obj_det * results[7]
+            encoder_scheduler.step(loss_val)
+            results += (loss_val,)
 
             # Update best mAP
-            fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+            fi = fitness_e2e(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
                 best_fitness = fi
             log_vals = list(mloss) + list(results) + [encoder_optimizer.param_groups[0]['lr']]
@@ -411,6 +411,10 @@ def train_intra(hyp,  # path/to/hyp.yaml or hyp dictionary
                                                        compute_loss=compute_loss,      # val best model with plots
                                                        intra_encoder=best_intra_encoder.half(),
                                                        criterion=criterion)
+
+                    # results : mp, mr, map50, map, box, obj, cls, loss_o, mse_loss, bpp_loss, enc_loss, aux_loss
+                    loss_val = results[10] + opt.w_obj_det * results[7]
+                    results += (loss_val,)
                     if is_coco:
                         callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + [encoder_optimizer.param_groups[0]['lr']], epoch, best_fitness, fi)
 
@@ -425,7 +429,7 @@ def parse_opt(known=False):
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default=ROOT / 'yolov5x6.pt', help='initial weights path')
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
-    parser.add_argument('--hyp', type=str, default=ROOT / 'data/hyps/hyp.scratch.yaml', help='hyperparameters path')
+    parser.add_argument('--hyp', type=str, default=ROOT / 'data/hyps/hyp.scratch-high.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--batch-size', type=int, default=16, help='total batch size for all GPUs, -1 for autobatch')
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=1024, help='train, val image size (pixels)')
@@ -460,7 +464,6 @@ def parse_opt(known=False):
     parser.add_argument('--aux-learning-rate', type=float, default=1e-3, help="Auxiliary loss learning rate (default: %(default)s)")
     parser.add_argument('--train-list', type=str, default=None, help='txt file containing the training list')
     parser.add_argument('--val-list', type=str, default=None, help='txt file containing the validation list')
-    parser.add_argument('--feature-max', type=float, default=20, help='The maximum range of the bottleneck features (for PSNR calculations)')
     parser.add_argument('--w-obj-det', type=float, default=1, help='The weight of the object detection loss in the total loss')
     # parser.add_argument('--deform-G', type=int, default=1, help='number of groups in deformable convolution layers')
     parser.add_argument('--frame-type', type=str, default='intra', help='type of the frame to be trained (intra/inter)')

@@ -174,9 +174,10 @@ def run(data,
     confusion_matrix = ConfusionMatrix(nc=nc)
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
     class_map = coco80_to_coco91_class() if is_coco else list(range(1000))
-    s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
+    s = ('%20s' + '%11s' * 14) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95', 'box', 'obj', 'cls', 'loss_o', 'mse_loss', 'bpp_loss', 'enc_loss', 'aux_loss')
     dt, p, r, f1, mp, mr, map50, map = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     loss = torch.zeros(3, device=device)
+    loss_o = 0
     mse_loss, aux_loss, bpp_loss, enc_loss = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
     # stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
@@ -209,7 +210,9 @@ def run(data,
 
         # Compute loss
         if compute_loss:
-            loss += compute_loss([x.float() for x in train_out], targets)[1]  # box, obj, cls
+            loss_o_tmp, loss_tmp = compute_loss([x.float() for x in train_out], targets)  # box, obj, cls
+            loss_o += loss_o_tmp
+            loss += loss_tmp
 
         # Run NMS
         targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
@@ -274,17 +277,18 @@ def run(data,
         nt = torch.zeros(1)
 
     # Print results
-    s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
-    pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
-    LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
+    loss_tot = torch.cat((loss, loss_o, mse_loss, bpp_loss, enc_loss, aux_loss))
+    pf = '%20s' + '%11i' * 2 + '%11.3g' * 12  # print format
+    LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map, *(loss_tot / len(dataloader))))
     with open(save_dir / 'result.txt', 'a') as f:
         f.write('\n\n' + s + '\n')
-        f.write(pf % ('all', seen, nt.sum(), mp, mr, map50*100, map*100) + '\n')
+        f.write(pf % ('all', seen, nt.sum(), mp, mr, map50*100, map*100, *(loss_tot / len(dataloader))) + '\n')
     
     # if track_stats:
     #     stats_bottleneck.output_stats(save_dir)
         
     # Print results per class
+    pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
@@ -336,7 +340,6 @@ def run(data,
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    loss_tot = torch.cat((loss, mse_loss, bpp_loss, enc_loss, aux_loss))
     return (mp, mr, map50, map, *(loss_tot.cpu() / len(dataloader)).tolist()), maps, t
 
 

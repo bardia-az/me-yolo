@@ -47,9 +47,9 @@ class Loggers():
         self.keys_me = ['train/L1', 'train/L2', 'train/psnr', 'train/out',  # train loss
                         'val/L1', 'val/L2', 'val/psnr', 'val/out',  # val loss
                         'x/lr1', 'x/lr2']  # params
-        self.keys_e2e_intra = ['train/box_loss', 'train/obj_loss', 'train/cls_loss', 'train/fid_loss(mse)', 'train/bpp_loss', 'train/enc_loss', 'train/aux_loss',   # train loss
+        self.keys_e2e_intra = ['train/box_loss', 'train/obj_loss', 'train/cls_loss', 'train/loss_o', 'train/loss', 'train/fid_loss(mse)', 'train/bpp_loss', 'train/enc_loss', 'train/aux_loss',   # train loss
                                'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',  # metrics
-                               'val/box_loss', 'val/obj_loss', 'val/cls_loss', 'val/fid_loss(mse)', 'val/bpp_loss', 'val/enc_loss', 'val/aux_loss',  # val loss
+                               'val/box_loss', 'val/obj_loss', 'val/cls_loss', 'val/loss_o', 'val/fid_loss(mse)', 'val/bpp_loss', 'val/enc_loss', 'val/aux_loss', 'val/loss',  # val loss
                                'x/lr']  # params
         for k in LOGGERS:
             setattr(self, k, None)  # init empty logger dictionary
