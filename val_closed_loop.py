@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction
+from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction, InterPrediction_new2
 from utils.datasets import create_dataloader
 from utils.general import (LOGGER, StatCalculator, check_file, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
@@ -212,7 +212,7 @@ def val_closed_loop(opt,
     motion_estimator = None
     if weights_me is not None:
         assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
-        motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+        motion_estimator = InterPrediction_new2(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
         # motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
         me_ckpt = torch.load(weights_me, map_location=device)
         motion_estimator.load_state_dict(me_ckpt['model'])

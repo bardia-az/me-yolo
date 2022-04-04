@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction
+from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction, InterPrediction_new2
 from utils.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams, LoadImages_me
 from utils.general import (LOGGER, apply_classifier, check_file, check_img_size, check_imshow, check_requirements,
                            check_suffix, colorstr, increment_path, non_max_suppression, print_args, save_one_box,
@@ -110,7 +110,8 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
             autoencoder.eval()
     # Loading Motion Estimator
     # motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=8).to(device)
-    motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+    motion_estimator = InterPrediction_new2(c=opt.autoenc_chs[-1], G=8).to(device)
+    # motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
     me_pretrained = False
     if weights_me is not None:
         me_pretrained = weights_me.endswith('.pt')
@@ -171,8 +172,8 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         T1_tilde = autoencoder(T1, visualize=visualize, task='enc', s='frame1')
         T2_tilde = autoencoder(T2, visualize=visualize, task='enc', s='frame2')
         T_in = torch.cat((T1_tilde, T2_tilde), 1)
-        Ttrg_hat = motion_estimator(T_in, visualize=visualize_motions)
-        # Ttrg_hat = motion_estimator(T1_tilde, T2_tilde, visualize=visualize_motions)
+        # Ttrg_hat = motion_estimator(T_in, visualize=visualize_motions)
+        Ttrg_hat = motion_estimator(T1_tilde, T2_tilde, visualize=visualize_motions)
         Ttrg_bar_pred = autoencoder(Ttrg, visualize=visualize, task='dec', bottleneck=Ttrg_hat, s='pred')
         Ttrg_bar = autoencoder(Ttrg, visualize=visualize, task='enc_dec', s='gt')
 

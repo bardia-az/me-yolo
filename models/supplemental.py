@@ -555,17 +555,18 @@ class InterPrediction_new1(nn.Module):
         x_cmp2 = self.mc(x2, off1=off1_2, off2=off2_2, off3=off3_2)
         x_out = self.refinement(torch.cat((x_cmp1, x_cmp2), 1))
         if visualize:
-            motion_field_visualization(off1_1, g=self.g, g_h=4, save_dir=visualize, l='1_1')
-            motion_field_visualization(off1_2, g=self.g, g_h=4, save_dir=visualize, l='1_2')
-            motion_field_visualization(off2_1, g=self.g, g_h=4, save_dir=visualize, l='2_1')
-            motion_field_visualization(off2_2, g=self.g, g_h=4, save_dir=visualize, l='2_2')
-            motion_field_visualization(off3_1, g=self.g, g_h=4, save_dir=visualize, l='3_1')
-            motion_field_visualization(off3_2, g=self.g, g_h=4, save_dir=visualize, l='3_2')
+            motion_field_visualization(off1_1, g=(4*self.g), g_h=4, save_dir=visualize, l='1_1')
+            motion_field_visualization(off1_2, g=(4*self.g), g_h=4, save_dir=visualize, l='1_2')
+            motion_field_visualization(off2_1, g=(3*self.g), g_h=4, save_dir=visualize, l='2_1')
+            motion_field_visualization(off2_2, g=(3*self.g), g_h=4, save_dir=visualize, l='2_2')
+            motion_field_visualization(off3_1, g=(2*self.g), g_h=4, save_dir=visualize, l='3_1')
+            motion_field_visualization(off3_2, g=(2*self.g), g_h=4, save_dir=visualize, l='3_2')
         return x_out
 
 class InterPrediction_new2(nn.Module):
     def __init__(self, c, G) -> None:
         super().__init__()
+        self.g = G
         self.pre_processing = PreProcessing(c)
         self.me = MotionEstimation(2*c)
         self.conv1_1 = Conv1x(8*c, 4*G*2*9)
@@ -593,12 +594,12 @@ class InterPrediction_new2(nn.Module):
         x_cmp2 = self.mc2(x2, off1=off1_2, off2=off2_2, off3=off3_2)
         x_out = self.refinement(torch.cat((x_cmp1, x_cmp2), 1))
         if visualize:
-            motion_field_visualization(off1_1, g=self.g, g_h=4, save_dir=visualize, l='1_1')
-            motion_field_visualization(off1_2, g=self.g, g_h=4, save_dir=visualize, l='1_2')
-            motion_field_visualization(off2_1, g=self.g, g_h=4, save_dir=visualize, l='2_1')
-            motion_field_visualization(off2_2, g=self.g, g_h=4, save_dir=visualize, l='2_2')
-            motion_field_visualization(off3_1, g=self.g, g_h=4, save_dir=visualize, l='3_1')
-            motion_field_visualization(off3_2, g=self.g, g_h=4, save_dir=visualize, l='3_2')
+            motion_field_visualization(off1_1, g=(4*self.g), g_h=4, save_dir=visualize, l='1_1')
+            motion_field_visualization(off1_2, g=(4*self.g), g_h=4, save_dir=visualize, l='1_2')
+            motion_field_visualization(off2_1, g=(3*self.g), g_h=4, save_dir=visualize, l='2_1')
+            motion_field_visualization(off2_2, g=(3*self.g), g_h=4, save_dir=visualize, l='2_2')
+            motion_field_visualization(off3_1, g=(2*self.g), g_h=4, save_dir=visualize, l='3_1')
+            motion_field_visualization(off3_2, g=(2*self.g), g_h=4, save_dir=visualize, l='3_2')
         return x_out
 
 
