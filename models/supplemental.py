@@ -19,7 +19,6 @@ import itertools
 
 
 ################## Auto Encoder ######################
-
 class Encoder(nn.Module):
     def __init__(self, chs, k=1, s=1, p=None):
         super().__init__()
@@ -72,8 +71,8 @@ class AutoEncoder(nn.Module):
             return self.dec(x)
 
 
-################## Motion Estimation ######################
-class MotionEstimation(nn.Module):
+################## Model-1 ######################
+class InterPrediction_1(nn.Module):
     def __init__(self, in_channels = 2):
         super().__init__()
 
@@ -126,35 +125,20 @@ class MotionEstimation(nn.Module):
             if isinstance(v, nn.Conv2d) :
                 init.constant_(v.weight, 0.)
         self.MoCmpns3_d   = torchvision.ops.DeformConv2d(in_channels=in_channels*8, out_channels=in_channels*8, kernel_size=3, padding=1, groups=in_channels, bias=False)
-        # self.Conv3_d      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*10, numOutCh=in_channels*8)
         self.Conv3_d      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*7, numOutCh=in_channels*6)
 
         # upward path
-        # self.Upsample2    = Upsampling(intInput=in_channels*8, kSize=3)
         self.Upsample2    = Upsampling(intInput=in_channels*6, kSize=3)
 
-        # self.EstOff2_u    = EstimateOffsets(numInputCh=in_channels*8, numMidCh=in_channels*9, numOutCh=in_channels*9*2)
-        # for v in self.EstOff2_u.modules():
-        #     if isinstance(v, nn.Conv2d) :
-        #         init.constant_(v.weight, 0.)
-        # self.MoCmpns2_u   = torchvision.ops.DeformConv2d(in_channels=in_channels*8, out_channels=in_channels*8, kernel_size=3, padding=1, groups=in_channels, bias=False)
-        # self.Conv2_u      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*6, numOutCh=in_channels*4)
         self.Conv2_u      = ConvBasic(numInputCh=in_channels*14, numMidCh=in_channels*8, numOutCh=in_channels*4)
 
         self.Upsample1    = Upsampling(intInput=in_channels*4, kSize=3)
 
-        # self.EstOff1_u    = EstimateOffsets(numInputCh=in_channels*4, numMidCh=in_channels*9, numOutCh=in_channels*9*2)
-        # for v in self.EstOff1_u.modules():
-        #     if isinstance(v, nn.Conv2d) :
-        #         init.constant_(v.weight, 0.)
-        # self.MoCmpns1_u   = torchvision.ops.DeformConv2d(in_channels=in_channels*4, out_channels=in_channels*4, kernel_size=3, padding=1, groups=in_channels, bias=False)
-        # self.Conv1_u      = ConvBasic(numInputCh=in_channels*4, numMidCh=in_channels*2, numOutCh=in_channels)
         self.Conv1_u      = ConvBasic(numInputCh=in_channels*8, numMidCh=in_channels*4, numOutCh=in_channels)
 
-#   def forward(self, x1, x2):
-    def forward(self, x, visualize=False):
-        # x = torch.cat((x1, x2), 1)
-        # print(x.shape)
+
+    def forward(self, x1, x2, visualize=False):
+        x = torch.cat((x1, x2), 1)
         off1_d      = self.EstOff1_d(x)
         compns1_d   = self.MoCmpns1_d(input=x, offset=off1_d)
         conv1_d     = self.Conv1_d(compns1_d)
@@ -177,22 +161,12 @@ class MotionEstimation(nn.Module):
 
         u2_in       = torch.cat((usmpl2, conv2_d), 1)
         conv2_u     = self.Conv2_u(u2_in)
-        # off2_u      = self.EstOff2_u(u2_in)
-        # compns2_u   = self.MoCmpns2_u(input=u2_in, offset=off2_u)
-        # off2_u      = self.EstOff2_u(usmpl2+conv2_d)
-        # compns2_u   = self.MoCmpns2_u(input=usmpl2+conv2_d, offset=off2_u)
-        # conv2_u     = self.Conv2_u(compns2_u)
-        
+    
 
         usmpl1      = self.Upsample1(F.interpolate(conv2_u, scale_factor=2.0, mode='bilinear', align_corners=True))
 
         u1_in       = torch.cat((usmpl1, conv1_d), 1)
         conv1_u     = self.Conv1_u(u1_in)
-        # off1_u      = self.EstOff1_u(u1_in)
-        # compns1_u   = self.MoCmpns1_u(input=u1_in, offset=off1_u)
-        # off1_u      = self.EstOff1_u(usmpl1+conv1_d)
-        # compns1_u   = self.MoCmpns1_u(input=usmpl1+conv1_d, offset=off1_u)
-        # conv1_u     = self.Conv1_u(compns1_u)
 
         if visualize:
             motion_field_visualization(off1_d, g=self.c, g_h=8, save_dir=visualize, l=1)
@@ -201,8 +175,8 @@ class MotionEstimation(nn.Module):
 
         return conv1_u
 
-################## Inter-Prediction ######################
-class InterPrediction(nn.Module):
+################## Model-2 ######################
+class InterPrediction_2(nn.Module):
     def __init__(self, in_channels=2, G=1):     # number of input channels, number of Groups in doform_conv
         super().__init__()
 
@@ -253,7 +227,6 @@ class InterPrediction(nn.Module):
         for v in me_modules:
             if isinstance(v, nn.Conv2d) :
                 init.zeros_(v.weight)
-                # init.constant_(v.bias, 0.1)
 
         #--- Motion Compensation ---#
         # Layer1 (down-scale)
@@ -356,7 +329,7 @@ class InterPrediction(nn.Module):
 
 
 
-################## Inter-Prediction new ######################
+################## Model-3 ######################
 def Conv2x(numInputCh, numMidCh, numOutCh, k=3):
     return nn.Sequential(
         nn.Conv2d(in_channels=numInputCh,  out_channels=numMidCh, kernel_size=k, stride=1, padding=k//2),
@@ -525,45 +498,7 @@ class Refinement(nn.Module):
         x = self.blk3(x)
         return x
 
-class InterPrediction_new1(nn.Module):
-    def __init__(self, c, G) -> None:
-        super().__init__()
-        self.g = G
-        self.pre_processing = PreProcessing(c)
-        self.me = MotionEstimation(2*c)
-        self.conv1_1 = Conv1x(8*c, 4*G*2*9)
-        self.conv1_2 = Conv1x(8*c, 4*G*2*9)
-        self.conv2_1 = Conv1x(6*c, 3*G*2*9)
-        self.conv2_2 = Conv1x(6*c, 3*G*2*9)
-        self.conv3_1 = Conv1x(4*c, 2*G*2*9)
-        self.conv3_2 = Conv1x(4*c, 2*G*2*9)
-        self.mc = MotionCompensation(c, G=G)
-        self.refinement = Refinement(2*c)
-
-    def forward(self, x1, x2, visualize=False):
-        x1_refined = self.pre_processing(x1)
-        x2_refined = self.pre_processing(x2)
-        x_me = torch.cat((x1_refined, x2_refined), 1)
-        master_off1, master_off2, master_off3 = self.me(x_me)
-        off1_1 = self.conv1_1(master_off1)
-        off1_2 = self.conv1_2(master_off1)
-        off2_1 = self.conv2_1(master_off2)
-        off2_2 = self.conv2_2(master_off2)
-        off3_1 = self.conv3_1(master_off3)
-        off3_2 = self.conv3_2(master_off3)
-        x_cmp1 = self.mc(x1, off1=off1_1, off2=off2_1, off3=off3_1)
-        x_cmp2 = self.mc(x2, off1=off1_2, off2=off2_2, off3=off3_2)
-        x_out = self.refinement(torch.cat((x_cmp1, x_cmp2), 1))
-        if visualize:
-            motion_field_visualization(off1_1, g=(4*self.g), g_h=4, save_dir=visualize, l='1_1')
-            motion_field_visualization(off1_2, g=(4*self.g), g_h=4, save_dir=visualize, l='1_2')
-            motion_field_visualization(off2_1, g=(3*self.g), g_h=4, save_dir=visualize, l='2_1')
-            motion_field_visualization(off2_2, g=(3*self.g), g_h=4, save_dir=visualize, l='2_2')
-            motion_field_visualization(off3_1, g=(2*self.g), g_h=4, save_dir=visualize, l='3_1')
-            motion_field_visualization(off3_2, g=(2*self.g), g_h=4, save_dir=visualize, l='3_2')
-        return x_out
-
-class InterPrediction_new2(nn.Module):
+class InterPrediction_3(nn.Module):
     def __init__(self, c, G) -> None:
         super().__init__()
         self.g = G
@@ -601,22 +536,4 @@ class InterPrediction_new2(nn.Module):
             motion_field_visualization(off3_1, g=(2*self.g), g_h=4, save_dir=visualize, l='3_1')
             motion_field_visualization(off3_2, g=(2*self.g), g_h=4, save_dir=visualize, l='3_2')
         return x_out
-
-
-
-
-if __name__ == '__main__':
-    #   from utils import set_cuda_devices
-    from torchsummary import summary
-
-    print("\nCheck Model")
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    #   set_cuda_devices(device, '0')
-
-    x     = (4, 128, 128)
-
-    model = MotionEstimation(in_channels = 2)
-
-    model.to(device)
-    summary(model, [x])
 

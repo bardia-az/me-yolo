@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation
+from models.supplemental import AutoEncoder, InterPrediction_1, InterPrediction_2, InterPrediction_3
 from utils.datasets import create_me_dataloader
 from utils.general import (LOGGER, StatCalculator, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
@@ -111,6 +111,7 @@ def run(data,
         dist_range=[-10,14],
         bins=10000,
         feature_max=20,
+        model_type='Model-1',
         model=None,
         dataloader=None,
         save_dir=Path(''),
@@ -164,7 +165,14 @@ def run(data,
 
         assert weights_me is not None, 'motion estimator weights should be available'
         assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
-        motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+        if model_type == 'Model-1':
+            motion_estimator = InterPrediction_1(opt.autoenc_chs[-1]).to(device)
+        elif model_type == 'Model-2':
+            motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], opt.deform_G).to(device)
+        elif model_type == 'Model-3':
+            motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], opt.deform_G).to(device)
+        else:
+            raise Exception(f'model-type={opt.model_type} is not supported')
         me_ckpt = torch.load(weights_me, map_location=device)
         motion_estimator.load_state_dict(me_ckpt['model'])
         print('motion estimator loaded successfully')
@@ -197,7 +205,7 @@ def run(data,
     dt, p, r, f1, mp, mr, map50, map = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     # jdict, stats, ap, ap_class = [], [], [], []
     if not compute_loss_me:
-        compute_loss_me = ComputeLossME(device, feature_max)
+        compute_loss_me = ComputeLossME(device, feature_max, 1)
     stats_residual = StatCalculator(dist_range, bins) if track_stats else None
     mloss = torch.zeros(4, device=device)  # mean losses
     
@@ -224,8 +232,6 @@ def run(data,
         T1_tilde = autoencoder(T1, task='enc')
         T2_tilde = autoencoder(T2, task='enc')
         Ttrg_tilde = autoencoder(Ttrg, task='enc')
-        # T_in = torch.cat((T1_tilde, T2_tilde), 1)
-        # Tpred_tilde = motion_estimator(T_in)
         Tpred_tilde = motion_estimator(T1_tilde, T2_tilde)
         Tpred_hat = autoencoder(None, task='dec', bottleneck=Tpred_tilde)
         Ttrg_hat = autoencoder(None, task='dec', bottleneck=Ttrg_tilde)
@@ -236,7 +242,7 @@ def run(data,
         mloss = (mloss * batch_i + loss_items) / (batch_i + 1)  # update mean losses
 
         if track_stats:
-            residual = (Ttrg_tilde - Ttrg_hat).detach().cpu().numpy()
+            residual = (Ttrg_tilde - Tpred_tilde).detach().cpu().numpy()
             stats_residual.update_stats(residual)
         
         dt[1] += time_sync() - t2
@@ -391,7 +397,7 @@ def parse_opt():
     parser.add_argument('--save-hybrid', action='store_true', help='save label+prediction hybrid results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-json', action='store_true', help='save a COCO-JSON results file')
-    parser.add_argument('--project', default=ROOT / 'runs/val', help='save to project/name')
+    parser.add_argument('--project', default=ROOT / 'runs/val_ME_DNN', help='save to project/name')
     parser.add_argument('--name', default='exp', help='save to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
@@ -402,9 +408,10 @@ def parse_opt():
     parser.add_argument('--data-list', type=str, default=None, help='txt file containing the validation list')
     parser.add_argument('--weights-me', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
-    parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
-    parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
+    parser.add_argument('--dist-range',  type=float, nargs='*', default=[-3,3], help='the range of the distribution')
+    parser.add_argument('--bins', type=int, default=1000, help='number of bins in histogram')
     parser.add_argument('--feature-max', type=float, default=20, help='The maximum range of the bottleneck features (for PSNR calculations)')
+    parser.add_argument('--model-type', type=str, default='Model-1', help='Which Inter-Prediction Model? Model-1, Model-2, or Model-3')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML

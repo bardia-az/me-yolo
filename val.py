@@ -142,10 +142,6 @@ def run(data,
         gs = max(int(model.stride.max()), 32)  # grid size (max stride)
         imgsz = check_img_size(imgsz, s=gs)  # check image size
 
-        # Multi-GPU disabled, incompatible with .half() https://github.com/ultralytics/yolov5/issues/99
-        # if device.type != 'cpu' and torch.cuda.device_count() > 1:
-        #     model = nn.DataParallel(model)
-
         # Data
         data = check_dataset(data, suffix=data_suffix)  # check
 
@@ -193,8 +189,6 @@ def run(data,
     L1, L2, SATD = [], [], []
     if arbitrary_dist is not None:
         pdf = np.load(arbitrary_dist)
-    # print(np.argmax(pdf))
-    # print(sum(pdf))
     stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
@@ -206,10 +200,7 @@ def run(data,
         t2 = time_sync()
         dt[0] += t2 - t1
 
-        # Run model
-        cut_model = 0
-        T = None
-        
+        # Run model        
         if(autoencoder is not None):
             T = model(img, augment=augment, cut_model=1)  # first half of the model
             T_bottleneck = autoencoder(T, task='enc')
@@ -220,12 +211,6 @@ def run(data,
             if compressibility_loss:
                 loss_r += compressibility_loss(T_bottleneck.float())[1]
         else:
-            # out = model(img, augment=augment, cut_model=cut_model, T=T)  # inference and training outputs
-            # torch.save(out, 'bullshit/T.t')
-            # print(out.size())
-            # smpl = torch.round(torch.clamp((out[0,60,:,:] * 255), 0, 255))
-            # smpl_cpu = smpl.detach().cpu().numpy().astype(np.uint8)
-            # cv2.imwrite('bullshit/test.png', smpl_cpu)
             N=None
             if(add_noise):
                 T = model(img, augment=augment, cut_model=1)  # inference and training outputs    
@@ -241,19 +226,13 @@ def run(data,
                     r = r_int + r_real
                     N = r * 20 / 255
                 else:
-                    print("The requested noise type is not supported")
+                    raise Exception(f"The requested noise type ({noise_type}) is not supported")
                 
                 T = T + N
 
                 L1.append(torch.mean(torch.abs(N)))
                 L2.append(torch.mean(torch.square(N)))
-                # N = N.unfold(2, kernel_size, kernel_stride).unfold(3, kernel_size, kernel_stride)
-                # N = N.contiguous().view(N.size(0), -1, N.size(4), N.size(5))
-                # print(N.size())
                 N = dct.blockify(N,8)
-                # print(N.size())
-                dctCoeff = dct.block_dct(N)
-                # print(dctCoeff.size())
                 SATD.append(torch.mean(torch.abs(dct.block_dct(N))))
 
                 out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
@@ -263,12 +242,6 @@ def run(data,
                 if track_stats:
                     stats_bottleneck.update_stats(T.detach().clone().cpu().numpy())
                 out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
-                # if(cut_model==1):
-                #     T = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
-                # elif(cut_model==0):
-                #     out, train_out = model(img, augment=augment, cut_model=cut_model)  # inference and training outputs
-                # elif(cut_model==2):
-                #     out, train_out = model(img, augment=augment, cut_model=2, T=T)  # inference and training outputs
 
         dt[1] += time_sync() - t2
 

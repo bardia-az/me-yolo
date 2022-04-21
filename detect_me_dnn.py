@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction, InterPrediction_new2
+from models.supplemental import AutoEncoder, InterPrediction_1, InterPrediction_2, InterPrediction_3
 from utils.datasets import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams, LoadImages_me
 from utils.general import (LOGGER, apply_classifier, check_file, check_img_size, check_imshow, check_requirements,
                            check_suffix, colorstr, increment_path, non_max_suppression, print_args, save_one_box,
@@ -63,15 +63,11 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         dnn=False,  # use OpenCV DNN for ONNX inference
         autoenc_chs=None,   # number of channels in the auto encoder
         supp_weights=None,  # autoencoder model.pt path(s)
-        weights_me=None     # motion estimator model.pt path(s)
+        weights_me=None,     # motion estimator model.pt path(s)
+        model_type='Model-1'
         ):
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
-    is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
-    is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
-    webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
-    if is_url and is_file:
-        source = check_file(source)  # download
 
     # Directories
     save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
@@ -96,37 +92,36 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
     # Loading Autoencoder
-    autoencoder = None
-    if supp_weights is not None:
-        autoenc_pretrained = supp_weights.endswith('.pt')
-        if autoenc_pretrained:
-            autoencoder = AutoEncoder(autoenc_chs).to(device)
-            supp_ckpt = torch.load(supp_weights, map_location=device)
-            autoencoder.load_state_dict(supp_ckpt['model'])
-            print('autoencoder loaded correctly')
-            del supp_ckpt
-            if half:
-                autoencoder.half()
-            autoencoder.eval()
-    # Loading Motion Estimator
-    # motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=8).to(device)
-    motion_estimator = InterPrediction_new2(c=opt.autoenc_chs[-1], G=8).to(device)
-    # motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
-    me_pretrained = False
-    if weights_me is not None:
-        me_pretrained = weights_me.endswith('.pt')
-        if me_pretrained:
-            me_ckpt = torch.load(weights_me, map_location=device)
-            motion_estimator.load_state_dict(me_ckpt['model'])
-            print('motion estimator loaded correctly')
-            if half:
-                motion_estimator.half()
-            motion_estimator.eval()
+    assert supp_weights is not None
+    assert supp_weights.endswith('.pt')
+    autoencoder = AutoEncoder(autoenc_chs).to(device)
+    supp_ckpt = torch.load(supp_weights, map_location=device)
+    autoencoder.load_state_dict(supp_ckpt['model'])
+    print('autoencoder loaded correctly')
+    del supp_ckpt
+    if half:
+        autoencoder.half()
+    autoencoder.eval()
+    # Loading Inter-Predictor        
+    if model_type == 'Model-1':
+        motion_estimator = InterPrediction_1(opt.autoenc_chs[-1]).to(device)
+    elif model_type == 'Model-2':
+        motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], opt.deform_G).to(device)
+    elif model_type == 'Model-3':
+        motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], opt.deform_G).to(device)
+    else:
+        raise Exception(f'model-type={opt.model_type} is not supported')
+    assert weights_me is not None
+    assert weights_me.endswith('.pt')
+    me_ckpt = torch.load(weights_me, map_location=device)
+    motion_estimator.load_state_dict(me_ckpt['model'])
+    print('motion estimator loaded correctly')
+    if half:
+        motion_estimator.half()
+    motion_estimator.eval()
 
 
     dataset = LoadImages_me(list_path, img_size=imgsz, stride=stride)
-    bs = 1  # batch_size
-    vid_path, vid_writer = [None] * bs, [None] * bs
 
     # Run inference
     if pt and device.type != 'cpu':
@@ -171,8 +166,6 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         Ttrg = model(target, augment=augment, cut_model=1, visualize=visualize)  # first half of the model
         T1_tilde = autoencoder(T1, visualize=visualize, task='enc', s='frame1')
         T2_tilde = autoencoder(T2, visualize=visualize, task='enc', s='frame2')
-        T_in = torch.cat((T1_tilde, T2_tilde), 1)
-        # Ttrg_hat = motion_estimator(T_in, visualize=visualize_motions)
         Ttrg_hat = motion_estimator(T1_tilde, T2_tilde, visualize=visualize_motions)
         Ttrg_bar_pred = autoencoder(Ttrg, visualize=visualize, task='dec', bottleneck=Ttrg_hat, s='pred')
         Ttrg_bar = autoencoder(Ttrg, visualize=visualize, task='enc_dec', s='gt')
@@ -331,6 +324,7 @@ def parse_opt():
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--weights-me', type=str, default=None, help='initial weights path for the motion estimator')
     parser.add_argument('--list-path', type=str, default=None, help='txt file containing the paths list')
+    parser.add_argument('--model-type', type=str, default='Model-1', help='Which Inter-Prediction Model? Model-1, Model-2, or Model-3')
 
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand

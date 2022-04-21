@@ -325,7 +325,7 @@ def parse_opt():
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
 
     # Supplemental arguments
-    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
 
     opt = parser.parse_args()

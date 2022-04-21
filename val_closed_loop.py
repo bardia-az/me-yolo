@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction, InterPrediction_new2
+from models.supplemental import AutoEncoder, InterPrediction_1, InterPrediction_2, InterPrediction_3
 from utils.datasets import create_dataloader
 from utils.general import (LOGGER, StatCalculator, check_file, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
@@ -80,7 +80,6 @@ def process_batch(detections, labels, iouv):
         if x[0].shape[0] > 1:
             matches = matches[matches[:, 2].argsort()[::-1]]
             matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
-            # matches = matches[matches[:, 2].argsort()[::-1]]
             matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
         matches = torch.Tensor(matches).to(iouv.device)
         correct[matches[:, 1].long()] = matches[:, 2:3] >= iouv
@@ -113,7 +112,6 @@ def get_tensors(img, model, autoencoder, lossless):
 def motion_estimation(ref_tensors, model):
     if model is not None:
         _, _, ch_h, ch_w = ref_tensors.shape
-        # T_in = ref_tensors.detach().clone().view(-1, ch_h, ch_w)
         T_in = ref_tensors.detach().clone()
         return model(T_in[0, ...].unsqueeze(0), T_in[1, ...].unsqueeze(0))
     else:
@@ -126,7 +124,6 @@ def tensors_to_tiled(tensor, tensors_w, tensors_h, tensors_min, tensors_max):
     tensor = torch.clamp(tensor, tensors_min, tensors_max)
     tensor = torch.reshape(tensor, (ch_num_h, ch_num_w, shape[2], shape[3]))
     tensor = torch.round((tensor - tensors_min) * 255 / (tensors_max - tensors_min))
-    # img = plt.imshow(tensor.cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
     return tensor.swapaxes(1,2).reshape((tensors_h, tensors_w))
 
 def tiled_to_tensor(tiled, ch_w, ch_h, tensors_min, tensors_max):
@@ -196,7 +193,6 @@ def val_closed_loop(opt,
     model.half() if half else model.float()
 
     # Loading Autoencoder and Motion Estimator
-    # assert supp_weights is not None, 'autoencoder weights should be available'
     autoencoder = None
     if supp_weights is not None:
         assert supp_weights.endswith('.pt'), 'autoencoder weight file format not supported ".pt"'
@@ -208,12 +204,17 @@ def val_closed_loop(opt,
         autoencoder.half() if half else autoencoder.float()
         autoencoder.eval()
 
-    # assert weights_me is not None, 'motion estimator weights should be available'
     motion_estimator = None
     if weights_me is not None:
         assert weights_me.endswith('.pt'), 'motion estimator weight file format not supported ".pt"'
-        motion_estimator = InterPrediction_new2(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
-        # motion_estimator = MotionEstimation(in_channels=opt.autoenc_chs[-1]).to(device)
+        if opt.model_type == 'Model-1':
+            motion_estimator = InterPrediction_1(opt.autoenc_chs[-1]).to(device)
+        elif opt.model_type == 'Model-2':
+            motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], opt.deform_G).to(device)
+        elif opt.model_type == 'Model-3':
+            motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], opt.deform_G).to(device)
+        else:
+            raise Exception(f'model-type={opt.model_type} is not supported')
         me_ckpt = torch.load(weights_me, map_location=device)
         motion_estimator.load_state_dict(me_ckpt['model'])
         print('motion estimator loaded successfully')
@@ -321,12 +322,8 @@ def val_closed_loop(opt,
                     tiled_tensors = tiled_tensors.half() if half else tiled_tensors.float()
                     rec_tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
                     ref_tensors[fr,:,:,:] = rec_tensors
-                    # plt.imshow(ref_tensors[0].reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
-                    # err = tensors1[0] - ref_tensors[fr,:,:,:]
-                    # plt.imshow(err.reshape(ch_num_h, ch_num_w, ch_h, ch_w).cpu().numpy().swapaxes(1,2).reshape((tensors_h, tensors_w)).astype(np.uint8), cmap='gray')
                 else:
                     pred_tensors = motion_estimation(ref_tensors, motion_estimator)
-                    # pred_tensors = tensors
                     residual = tensors - pred_tensors
                     tiled_res = tensors_to_tiled(residual, tensors_w, tensors_h, res_min, res_max)
                     to_be_coded_frame_data = tiled_res.cpu().numpy().flatten().astype(np.uint8)
@@ -362,7 +359,6 @@ def val_closed_loop(opt,
         else:
             out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
             error = rec_tensors - tensors[0]
-            # out = get_yolo_prediction(tensors, autoencoder, model)
             if track_stats:
                 stats_error.update_stats(error.detach().clone().cpu().numpy())
             if save_videos:
@@ -592,6 +588,7 @@ def parse_opt():
     parser.add_argument('--tensor-video', type=str, default=None, help='the path of the tiled tensor video')
     parser.add_argument('--res-per-frame', action='store_true', help='save the mAP results per frame')
     parser.add_argument('--deform-G', type=int, default=8, help='number of groups in deformable convolution layers')
+    parser.add_argument('--model-type', type=str, default='Model-1', help='Which Inter-Prediction Model? Model-1, Model-2, or Model-3')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
@@ -606,7 +603,6 @@ def main(opt):
 
     # Directories
     opt.data, opt.weights, opt.project = check_file(opt.data), str(opt.weights), str(opt.project)  # checks
-    # save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)  # increment run
     save_dir = (Path(opt.project) / opt.name)  # increment run
     (save_dir / 'labels' if opt.save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
     opt.save_dir = str(save_dir)

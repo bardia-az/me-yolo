@@ -156,11 +156,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     else:
         raise Exception(f'train-yolo={train_yolo} is not supported')
     # Freeze
-    # freeze = [f'model.{x}.' for x in range(freeze)]  # layers to freeze
     freeze = [f'model.{x}' for x in range(freeze)]  # layers to freeze
     for k, v in model.named_parameters():
         v.requires_grad = True  # train all layers
-        # print(k,v)
         if any(f'{x}.' in k for x in freeze):
             LOGGER.info(f'freezing {k}')
             v.requires_grad = False
@@ -235,7 +233,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             ema.updates = ckpt['updates']
 
         # Epochs
-        # start_epoch = ckpt['epoch'] + 1
         if resume:
             start_epoch = ckpt['epoch'] + 1
             assert start_epoch > 0, f'{weights} training to {epochs} epochs is finished, nothing to resume.'
@@ -274,9 +271,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
         if not resume:
             labels = np.concatenate(dataset.labels, 0)
-            # c = torch.tensor(labels[:, 0])  # classes
-            # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
-            # model._initialize_biases(cf.to(device))
             if plots:
                 plot_labels(labels, names, save_dir)
 
@@ -308,9 +302,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     # Start training
     t0 = time.time()
-    # nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
     nw = round(hyp['warmup_epochs'] * nb)  # number of warmup iterations, max(3 epochs, 1k iterations)
-    # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
     last_opt_step = -1
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
@@ -325,10 +317,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 f'Starting training for {epochs} epochs...')
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-        # model.eval()
         for k, m in model.named_modules():
             if any(x == k for x in freeze):
-                # print(f'{k} \t => {m}')
                 m.eval()
 
 
@@ -337,10 +327,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc  # class weights
             iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
             dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
-
-        # Update mosaic border (optional)
-        # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
-        # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
         mloss = torch.zeros(4, device=device)  # mean losses
         if RANK != -1:
@@ -357,7 +343,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             # Warmup
             if ni <= nw:
                 xi = [0, nw]  # x interp
-                # compute_loss.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
                 accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
                 for j, x in enumerate(optimizer.param_groups):
                     # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
@@ -375,9 +360,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
             # Forward
             with amp.autocast(enabled=cuda):
-                # pred = model(imgs)  # forward
                 T = model(imgs, cut_model=1)  # first half of the model
-                # T_hat = autoencoder(T)
                 T_bottleneck = autoencoder(T, task='enc')
                 T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
                 pred = model(None, cut_model=2, T=T_hat)  # second half of the model
@@ -469,19 +452,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if RANK == -1 and stopper(epoch=epoch, fitness=fi):
                 break
 
-            # Stop DDP TODO: known issues shttps://github.com/ultralytics/yolov5/pull/4576
-            # stop = stopper(epoch=epoch, fitness=fi)
-            # if RANK == 0:
-            #    dist.broadcast_object_list([stop], 0)  # broadcast 'stop' to all ranks
-
-        # Stop DPP
-        # with torch_distributed_zero_first(RANK):
-        # if stop:
-        #    break  # must break all DDP ranks
-
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
-    # del model, autoencoder
 
     if RANK in [-1, 0]:
         del model, autoencoder
@@ -563,7 +535,7 @@ def parse_opt(known=False):
     parser.add_argument('--artifact_alias', type=str, default='latest', help='W&B: Version of dataset artifact to use')
 
     # Supplemental arguments
-    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--train-yolo', type=str, default='all', help='which part of the yolo gets trained: backend, all, nothing')
     parser.add_argument('--freeze-autoenc', action='store_true', help='determins autoencoder weights to be freezed')

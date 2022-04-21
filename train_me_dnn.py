@@ -35,7 +35,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 import val_me_dnn  # for end-of-epoch mAP
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder, MotionEstimation, InterPrediction, InterPrediction_new1, InterPrediction_new2
+from models.supplemental import AutoEncoder, InterPrediction_1, InterPrediction_2, InterPrediction_3
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.autobatch import check_train_batch_size
@@ -46,7 +46,6 @@ from utils.general import (LOGGER, check_dataset, check_file, check_git_status, 
                            print_args, print_mutation, strip_optimizer, print_args_to_file)
 from utils.downloads import attempt_download
 from utils.loss import ComputeLoss, ComputeLossME
-# from utils.plots import plot_labels, plot_evolve
 from utils.torch_utils import EarlyStopping, ModelEMA, de_parallel, select_device, torch_distributed_zero_first
 from utils.loggers.wandb.wandb_utils import check_wandb_resume
 from utils.metrics import fitness
@@ -137,9 +136,15 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             print('pretrained autoencoder')
             del supp_ckpt
 
-    # motion_estimator = InterPrediction(in_channels=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
-    motion_estimator = InterPrediction_new2(c=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
-    # motion_estimator = InterPrediction_new2(c=opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+    if opt.model_type == 'Model-1':
+        motion_estimator = InterPrediction_1(opt.autoenc_chs[-1]).to(device)
+    elif opt.model_type == 'Model-2':
+        motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], opt.deform_G).to(device)
+    elif opt.model_type == 'Model-3':
+        motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], opt.deform_G).to(device)
+    else:
+        raise Exception(f'model-type={opt.model_type} is not supported')
+    
     me_pretrained = False
     if weights_me is not None:
         me_pretrained = weights_me.endswith('.pt')
@@ -147,7 +152,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             me_ckpt = torch.load(weights_me, map_location=device)
             motion_estimator.load_state_dict(me_ckpt['model'])
             print('pretrained motion estimator')
-            # del me_ckpt
 
     for v in autoencoder.parameters():
         v.requires_grad = False
@@ -184,7 +188,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         optimizer = SGD(g2, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
 
     optimizer.add_param_group({'params': g1, 'weight_decay': hyp['weight_decay']})  # add g1 with weight_decay
-    # optimizer.add_param_group({'params': g2})  # add g2 (biases)
     LOGGER.info(f"{colorstr('optimizer:')} {type(optimizer).__name__} with parameter groups "
                 f"{len(g0)} weight, {len(g1)} weight (no decay), {len(g2)} bias")
     del g0, g1, g2
@@ -229,33 +232,17 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     # Trainloader
     train_loader = create_me_dataloader(opt.train_list, imgsz, batch_size // WORLD_SIZE, rank=LOCAL_RANK, workers=workers, augment=True)
-                                        # prefix=colorstr('train: '))
 
-    # mlc = int(np.concatenate(dataset.labels, 0)[:, 0].max())  # max label class
     nb = len(train_loader)  # number of batches
-    # assert mlc < nc, f'Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}'
 
     # Process 0
     if RANK in [-1, 0]:
         val_loader = create_me_dataloader(opt.val_list, imgsz, batch_size // WORLD_SIZE * 2, rank=-1, workers=workers, augment=False)
-                                        #   prefix=colorstr('val: '))
 
         if not resume:
-            # labels = np.concatenate(dataset.labels, 0)
-            # # c = torch.tensor(labels[:, 0])  # classes
-            # # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
-            # # model._initialize_biases(cf.to(device))
-            # if plots:
-            #     plot_labels(labels, names, save_dir)
-
-            # # Anchors
-            # if not opt.noautoanchor:
-            #     check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
             model.half().float()  # pre-reduce anchor precision
             autoencoder.half().float()
             motion_estimator.half().float()
-
-        # callbacks.run('on_pretrain_routine_end')
 
     # DDP mode
     if cuda and RANK != -1:
@@ -292,10 +279,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.eval()
 
-        # Update mosaic border (optional)
-        # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
-        # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
-
         mloss = torch.zeros(4, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
@@ -329,8 +312,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 T1_tilde = autoencoder(T1, task='enc')
                 T2_tilde = autoencoder(T2, task='enc')
                 Ttrg_tilde = autoencoder(Ttrg, task='enc')
-                # T_in = torch.cat((T1_tilde, T2_tilde), 1)
-                # Tpred_tilde = motion_estimator(T_in)
                 Tpred_tilde = motion_estimator(T1_tilde, T2_tilde)
                 Tpred_hat = autoencoder(None, task='dec', bottleneck=Tpred_tilde)
                 Ttrg_hat = autoencoder(None, task='dec', bottleneck=Ttrg_tilde)
@@ -386,9 +367,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                          motion_estimator=deepcopy(motion_estimator).half())
 
             # Update best mAP
-            # fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
-            # if fi > best_fitness:
-            #     best_fitness = fi
             fi = 1 / results[0]
             if fi >= best_fitness:
                 best_fitness = fi
@@ -428,9 +406,13 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 # strip_optimizer(f)  # strip optimizers
                 if f is best:
 
-                    # best_motion_estimator = InterPrediction(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
-                    best_motion_estimator = InterPrediction_new2(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
-                    # best_motion_estimator = InterPrediction_new2(opt.autoenc_chs[-1], G=opt.deform_G).to(device)
+                    if opt.model_type == 'Model-1':
+                        best_motion_estimator = InterPrediction_1(opt.autoenc_chs[-1]).to(device)
+                    elif opt.model_type == 'Model-2':
+                        best_motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], opt.deform_G).to(device)
+                    else:
+                        best_motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], opt.deform_G).to(device)
+
                     ckpt = torch.load(best)
                     best_motion_estimator.load_state_dict(ckpt['model'])
 
@@ -451,7 +433,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     if is_coco:
                         callbacks.run('on_fit_epoch_end_me', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
 
-        # callbacks.run('on_train_end', last, best, plots, epoch, results)
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}")
 
     torch.cuda.empty_cache()
@@ -470,7 +451,6 @@ def parse_opt(known=False):
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
     parser.add_argument('--noval', action='store_true', help='only validate final epoch')
     parser.add_argument('--evolve', type=int, nargs='?', const=300, help='evolve hyperparameters for x generations')
-    parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
     parser.add_argument('--cache', type=str, nargs='?', const='ram', help='--cache images in "ram" (default) or "disk"')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--single-cls', action='store_true', help='train multi-class data as single-class')
@@ -493,7 +473,7 @@ def parse_opt(known=False):
     parser.add_argument('--artifact_alias', type=str, default='latest', help='W&B: Version of dataset artifact to use')
 
     # Supplemental arguments
-    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320,64], help='number of channels in autoencoder')
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--weights-me', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--train-yolo', type=str, default='all', help='which part of the yolo gets trained: backend, all, nothing')
@@ -504,6 +484,7 @@ def parse_opt(known=False):
     parser.add_argument('--deform-G', type=int, default=1, help='number of groups in deformable convolution layers')
     parser.add_argument('--lr0', type=float, default=0.01, help='initial learning rate')
     parser.add_argument('--lrf', type=float, default=0.2, help='final OneCycleLR learning rate (lr0 * lrf)')
+    parser.add_argument('--model-type', type=str, default='Model-1', help='Which Inter-Prediction Model? Model-1, Model-2, or Model-3')
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
     return opt
