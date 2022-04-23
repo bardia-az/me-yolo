@@ -491,7 +491,7 @@ def motion_field_visualization(x, g=64, g_h=8, save_dir=Path('runs/detect/exp'),
             motion_field = motion_field.permute(0,1,4,2,5,3)
             motion_field = motion_field.reshape(b,g_h*h,-1,2)
 
-            motion_field = motion_field.numpy()
+            motion_field = motion_field.cpu().numpy()
 
             pyimof.display.plot(motion_field[0, ..., 0], motion_field[0, ..., 1], cmap='hsv')
             # plt.show()

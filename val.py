@@ -417,8 +417,8 @@ def parse_opt():
     parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
-    parser.add_argument('--dist-range',  type=float, nargs='*', default=[-10,14], help='the range of the distribution')
-    parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
+    parser.add_argument('--dist-range',  type=float, nargs='*', default=[-3,3], help='the range of the distribution')
+    parser.add_argument('--bins', type=int, default=1000, help='number of bins in histogram')
     parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
 
     opt = parser.parse_args()

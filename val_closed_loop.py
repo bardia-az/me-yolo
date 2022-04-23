@@ -92,22 +92,13 @@ def read_y_channel(file, w, h):
     raw = raw.reshape((h,w))
     return raw
 
-def get_tensors(img, model, autoencoder, lossless):
-    if lossless:
-        if autoencoder is not None:
-            T = model(img, cut_model=1)  # first half of the model
-            T_hat = autoencoder(T)
-            out, _ = model(None, cut_model=2, T=T_hat)  # second half of the model
-        else:
-            out, _ = model(img, cut_model=0)  # original model
-        return out
+def get_tensors(img, model, autoencoder):
+    T = model(img, cut_model=1)  # first half of the model
+    if autoencoder is not None:
+        T_bottleneck = autoencoder(T, task='enc')
     else:
-        T = model(img, cut_model=1)  # first half of the model
-        if autoencoder is not None:
-            T_bottleneck = autoencoder(T, task='enc')
-        else:
-            T_bottleneck = T
-        return T_bottleneck
+        T_bottleneck = T
+    return T_bottleneck
 
 def motion_estimation(ref_tensors, model):
     if model is not None:
@@ -135,14 +126,14 @@ def tiled_to_tensor(tiled, ch_w, ch_h, tensors_min, tensors_max):
     return tensor
 
 def encode_frame(data, tensors_w, tensors_h, txt_file, frame_rate, qp):
-    VVC_command = ['working_dir/vvencFFapp', '-c', 'working_dir/lowdelay_faster.cfg', '-i', 'working_dir/to_be_coded_frame.yuv', '-b', 'working_dir/bitstream.bin', 
-                   '-o', 'working_dir/reconst.yuv', '--SourceWidth', str(tensors_w), '--SourceHeight', str(tensors_h), '-f', '1', '-fr', str(frame_rate), '-q', str(qp)]
-    to_be_coded_file = 'working_dir/to_be_coded_frame.yuv'
+    VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_latent.cfg', '-i', '../vvc/to_be_coded_frame.yuv', '-b', '../vvc/bitstream.bin', 
+                   '-o', '../vvc/reconst.yuv', '--SourceWidth', str(tensors_w), '--SourceHeight', str(tensors_h), '-f', '1', '-fr', str(frame_rate), '-q', str(qp)]
+    to_be_coded_file = '../vvc/to_be_coded_frame.yuv'
     with open(to_be_coded_file, 'wb') as f:
         f.write(data)
     subprocess.call(VVC_command, stdout=txt_file)
-    Byte_num = os.path.getsize('working_dir/bitstream.bin')/1024.0
-    with open('working_dir/reconst.yuv', 'rb') as f:
+    Byte_num = os.path.getsize('../vvc/bitstream.bin')/1024.0
+    with open('../vvc/reconst.yuv', 'rb') as f:
         tmp_reconst = read_y_channel(f, tensors_w, tensors_h)
     return tmp_reconst, Byte_num
 
@@ -161,9 +152,9 @@ def val_closed_loop(opt,
                     callbacks=Callbacks()):
 
     save_dir, batch_size, weights, single_cls, data, supp_weights, half, weights_me, plots, tensors_w, tensors_h, tensors_min, \
-        tensors_max, res_min, res_max, save_videos, track_stats, lossless, tensor_video = \
+        tensors_max, res_min, res_max, save_videos, track_stats, lossless, tensor_video, save_original = \
         Path(opt.save_dir), opt.batch_size, opt.weights, opt.single_cls, opt.data, opt.supp_weights, opt.half, opt.weights_me, False, opt.tensors_w, \
-        opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max, opt.save_videos, opt.track_stats, opt.lossless, opt.tensor_video
+        opt.tensors_h, opt.tensors_min, opt.tensors_max, opt.res_min, opt.res_max, opt.save_videos, opt.track_stats, opt.lossless, opt.tensor_video, opt.save_original
 
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.safe_dump(vars(opt), f, sort_keys=False)
@@ -276,7 +267,7 @@ def val_closed_loop(opt,
         plot_dir = (save_dir / 'plots')
 
     if save_videos:
-        assert not (error_full_name.exists()), 'This run has been done before. Videos are already available. Delete the videos to run again.'
+        assert not (error_full_name.exists()), 'This run has been done before. Videos are already available. Delete the corresponding tiled tensor videos to run again.'
 
     if tensor_video is None:
         full_to_be_coded_frame_f = to_be_coded_full_name.open('ab') if save_videos else None
@@ -286,6 +277,11 @@ def val_closed_loop(opt,
         report_file = report_file_name.open('a') if not(lossless) else None
     tensor_video_f = Path(tensor_video).open('rb') if tensor_video is not None else None
     error_full_f = error_full_name.open('ab') if save_videos else None
+
+    if save_original:
+        (save_dir / 'tiled_tensors').mkdir(parents=True, exist_ok=True)
+        original_full_name = (save_dir / 'tiled_tensors' / f'latent_{video_name}').with_suffix('.yuv')
+        original_full_f = original_full_name.open('ab')
 
     optimal_qp_for_I_frames = 28
     ref_num = 2
@@ -305,7 +301,7 @@ def val_closed_loop(opt,
         t2 = time_sync()
         dt[0] += t2 - t1
 
-        tensors = get_tensors(img, model, autoencoder, lossless)
+        tensors = get_tensors(img, model, autoencoder)
         if tensor_video is None:
             if not lossless:
                 if fr < ref_num:
@@ -355,7 +351,11 @@ def val_closed_loop(opt,
             rec_tensors = tiled_to_tensor(tiled_tensors, ch_w, ch_h, tensors_min, tensors_max)
 
         if lossless:
-            out = tensors
+            out = get_yolo_prediction(tensors, autoencoder, model)
+            if save_original:
+                tiled_tensors = tensors_to_tiled(tensors, tensors_w, tensors_h, tensors_min, tensors_max)
+                to_be_coded_frame_data = tiled_tensors.cpu().numpy().flatten().astype(np.uint8)
+                original_full_f.write(to_be_coded_frame_data)
         else:
             out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
             error = rec_tensors - tensors[0]
@@ -431,6 +431,8 @@ def val_closed_loop(opt,
         error_full_f.close()
     if tensor_video is not None:
         tensor_video_f.close()
+    if save_original:
+        original_full_f.close()
     
     # Compute statistics
     if opt.res_per_frame:
@@ -585,6 +587,7 @@ def parse_opt():
     parser.add_argument('--save-videos', action='store_true', help='save the predicted, to-be-coded, and reconstructed videos')
     parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
     parser.add_argument('--lossless', action='store_true', help='This flag indicates evaluation without compression')
+    parser.add_argument('--save-original', action='store_true', help='This flag indicates saving the original latent space video')
     parser.add_argument('--tensor-video', type=str, default=None, help='the path of the tiled tensor video')
     parser.add_argument('--res-per-frame', action='store_true', help='save the mAP results per frame')
     parser.add_argument('--deform-G', type=int, default=8, help='number of groups in deformable convolution layers')

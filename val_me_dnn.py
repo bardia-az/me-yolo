@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 from threading import Thread
+from turtle import position
 
 import numpy as np
 import torch
@@ -111,6 +112,7 @@ def run(data,
         dist_range=[-10,14],
         bins=10000,
         feature_max=20,
+        deform_G=8,
         model_type='Model-1',
         model=None,
         dataloader=None,
@@ -168,9 +170,9 @@ def run(data,
         if model_type == 'Model-1':
             motion_estimator = InterPrediction_1(opt.autoenc_chs[-1]).to(device)
         elif model_type == 'Model-2':
-            motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], opt.deform_G).to(device)
+            motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], deform_G).to(device)
         elif model_type == 'Model-3':
-            motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], opt.deform_G).to(device)
+            motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], deform_G).to(device)
         else:
             raise Exception(f'model-type={opt.model_type} is not supported')
         me_ckpt = torch.load(weights_me, map_location=device)
@@ -209,7 +211,7 @@ def run(data,
     stats_residual = StatCalculator(dist_range, bins) if track_stats else None
     mloss = torch.zeros(4, device=device)  # mean losses
     
-    for batch_i, (ref1, ref2, target) in enumerate(tqdm(dataloader, desc=s)):
+    for batch_i, (ref1, ref2, target) in enumerate(tqdm(dataloader, desc=s, position=0, leave=True)):
         t1 = time_sync()
         ref1 = ref1.to(device, non_blocking=True)
         ref1 = ref1.half() if half else ref1.float()  # uint8 to fp16/32
@@ -411,6 +413,7 @@ def parse_opt():
     parser.add_argument('--dist-range',  type=float, nargs='*', default=[-3,3], help='the range of the distribution')
     parser.add_argument('--bins', type=int, default=1000, help='number of bins in histogram')
     parser.add_argument('--feature-max', type=float, default=20, help='The maximum range of the bottleneck features (for PSNR calculations)')
+    parser.add_argument('--deform-G', type=int, default=8, help='number of groups in deformable convolution layers')
     parser.add_argument('--model-type', type=str, default='Model-1', help='Which Inter-Prediction Model? Model-1, Model-2, or Model-3')
 
     opt = parser.parse_args()

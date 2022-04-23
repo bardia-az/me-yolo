@@ -64,6 +64,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         autoenc_chs=None,   # number of channels in the auto encoder
         supp_weights=None,  # autoencoder model.pt path(s)
         weights_me=None,     # motion estimator model.pt path(s)
+        deform_G=8,
         model_type='Model-1'
         ):
     source = str(source)
@@ -106,9 +107,9 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
     if model_type == 'Model-1':
         motion_estimator = InterPrediction_1(opt.autoenc_chs[-1]).to(device)
     elif model_type == 'Model-2':
-        motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], opt.deform_G).to(device)
+        motion_estimator = InterPrediction_2(opt.autoenc_chs[-1], deform_G).to(device)
     elif model_type == 'Model-3':
-        motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], opt.deform_G).to(device)
+        motion_estimator = InterPrediction_3(opt.autoenc_chs[-1], deform_G).to(device)
     else:
         raise Exception(f'model-type={opt.model_type} is not supported')
     assert weights_me is not None
@@ -324,8 +325,9 @@ def parse_opt():
     parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--weights-me', type=str, default=None, help='initial weights path for the motion estimator')
     parser.add_argument('--list-path', type=str, default=None, help='txt file containing the paths list')
+    parser.add_argument('--deform-G', type=int, default=8, help='number of groups in deformable convolution layers')
     parser.add_argument('--model-type', type=str, default='Model-1', help='Which Inter-Prediction Model? Model-1, Model-2, or Model-3')
-
+    
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     print_args(FILE.stem, opt)
