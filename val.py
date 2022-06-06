@@ -189,7 +189,7 @@ def run(data,
     L1, L2, SATD = [], [], []
     if arbitrary_dist is not None:
         pdf = np.load(arbitrary_dist)
-    stats_bottleneck = StatCalculator(dist_range, bins) if track_stats else None
+    stats_bottleneck = StatCalculator(dist_range, bins, per_chs=True) if track_stats else None
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
         img = img.to(device, non_blocking=True)
@@ -201,7 +201,7 @@ def run(data,
         dt[0] += t2 - t1
 
         # Run model        
-        if(autoencoder is not None):
+        if autoencoder is not None:
             T = model(img, augment=augment, cut_model=1)  # first half of the model
             T_bottleneck = autoencoder(T, task='enc')
             T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
@@ -212,7 +212,7 @@ def run(data,
                 loss_r += compressibility_loss(T_bottleneck.float())[1]
         else:
             N=None
-            if(add_noise):
+            if add_noise:
                 T = model(img, augment=augment, cut_model=1)  # inference and training outputs    
                 if(noise_type=='gaussian'):
                     N = (gauss_var ** 0.5) * torch.randn_like(T)

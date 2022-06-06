@@ -855,16 +855,21 @@ def increment_path(path, exist_ok=False, sep='', mkdir=False):
 
 
 class StatCalculator:
-    def __init__(self, range, bins):
+    def __init__(self, range, bins, per_chs=False):
         self.n = 0
         self.std = 0
         self.mean = 0
+        self.means = 0
         self.var = 0
+        self.vars = 0
         self.bins = bins
         self.hist = np.zeros(self.bins)
         self.vmin = float('inf')
         self.vmax = float('-inf')
+        self.vmins = float('inf')
+        self.vmaxs = float('-inf')
         self.range = range
+        self.per_chs = per_chs
 
     def update_stats(self, new_set):
         self.vmin = min(self.vmin, new_set.min())
@@ -874,7 +879,6 @@ class StatCalculator:
 
         mean2 = np.mean(new_set)
         var2 = np.var(new_set)
-        # n2 = new_set.size
         n2 = 1
         mean1 = self.mean
         var1 = self.var
@@ -887,7 +891,21 @@ class StatCalculator:
         self.mean = mean
         self.var = var
         self.std = std
-        # self.n += n2
+        
+        if self.per_chs:
+            self.vmins = np.minimum(self.vmins, new_set.min(axis=(0,2,3)))
+            self.vmaxs = np.maximum(self.vmaxs, new_set.max(axis=(0,2,3)))
+            mean2s = np.mean(new_set, axis=(0,2,3))
+            var2s = np.var(new_set, axis=(0,2,3))
+            mean1s = self.means
+            var1s = self.vars
+            
+            means = ((n1 * mean1s) + (n2 * mean2s)) / (n1 + n2)
+            vars = (n1 * (var1s + (mean1s - means)**2) + n2 * (var2s + (mean2s - means)**2)) / (n1 + n2)
+
+            self.means = means
+            self.vars = vars
+
         self.n += 1
 
     def output_stats(self, save_dir, name=''):
@@ -909,7 +927,16 @@ class StatCalculator:
         plt.savefig(save_dir / f'histogram_{name}.png', dpi=300, bbox_inches='tight')
         plt.close()
 
+        if self.per_chs:
+            sorted_chs = np.argsort(self.vars)
+            sorted_chs_des = sorted_chs[::-1]
+            np.save(save_dir / 'sorted_channels', sorted_chs_des)
+            with open(save_dir / 'sort_ids.txt', 'w') as f:
+                np.savetxt(f, sorted_chs_des, fmt='%d')
 
-
+            range_per_chs = np.concatenate((self.vmins[..., np.newaxis], self.vmaxs[..., np.newaxis]), axis=1)
+            np.save(save_dir / 'range_channels', range_per_chs)
+            with open(save_dir / 'ranges.txt', 'w') as f:
+                np.savetxt(f, range_per_chs, fmt='%.2f')
 
 
