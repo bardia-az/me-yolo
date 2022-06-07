@@ -103,10 +103,13 @@ def get_tensors(img, model, autoencoder):
 # def tensors_to_tiled(tensor, chs_in_w, chs_in_h, chromic_chs, ranges, sorted_chs):
 #     shape = tensor.shape
 #     assert shape[1] == chs_in_w*chs_in_h*chromic_chs, 'chs_in_w & chs_in_h are not valid values based on the latent tensors'
+#     img = plt.imshow(tensor.cpu().numpy().reshape((chs_in_h,chs_in_w*chromic_chs,shape[2], shape[3])).swapaxes(1,2).reshape((chs_in_h*shape[2], chs_in_w*chromic_chs*shape[3])), cmap='gray')
 #     mins, maxs = ranges[:,0].reshape((1,-1,1,1)), ranges[:,1].reshape((1,-1,1,1))
-#     tensor = torch.min(torch.max(tensor, mins), maxs)
+#     tensor = torch.minimum(torch.maximum(tensor, mins), maxs)
 #     tensor = torch.round((tensor - mins) * 255 / (maxs - mins))
+#     img = plt.imshow(tensor.cpu().numpy().reshape((chs_in_h,chs_in_w*chromic_chs,shape[2], shape[3])).swapaxes(1,2).reshape((chs_in_h*shape[2], chs_in_w*chromic_chs*shape[3])).astype(np.uint8), cmap='gray')
 #     tensor = tensor[:,sorted_chs,:,:]
+#     img = plt.imshow(tensor.cpu().numpy().reshape((chs_in_h,chs_in_w*chromic_chs,shape[2], shape[3])).swapaxes(1,2).reshape((chs_in_h*shape[2], chs_in_w*chromic_chs*shape[3])).astype(np.uint8), cmap='gray')
 #     tensor = torch.reshape(tensor, (chromic_chs, chs_in_h, chs_in_w, shape[2], shape[3]))
 #     return tensor.swapaxes(2,3).reshape((chromic_chs, chs_in_h*shape[2], chs_in_w*shape[3]))
 
@@ -126,12 +129,15 @@ def tensors_to_tiled(tensor, chs_in_w, chs_in_h, chromic_chs, ranges, sorted_chs
 # def tiled_to_tensor(tiled, ch_w, ch_h, ranges, sorted_chs):
 #     shape = tiled.shape
 #     chromic_chs, chs_in_w, chs_in_h = shape[0], shape[2] // ch_w, shape[1] // ch_h
-#     mins, maxs = ranges[:,0].reshape((1,-1,1,1)), ranges[:,1].reshape((1,-1,1,1))
+#     mins, maxs = ranges[:,0].reshape((-1,1,1)), ranges[:,1].reshape((-1,1,1))
 #     tiled = torch.reshape(tiled, (chromic_chs, chs_in_h, ch_h, chs_in_w, ch_w))
 #     sorted_tensor = tiled.swapaxes(2,3).reshape((-1, ch_h, ch_w))
+#     img = plt.imshow(sorted_tensor.cpu().numpy().reshape((chs_in_h,chs_in_w*chromic_chs,ch_h, ch_w)).swapaxes(1,2).reshape((chs_in_h*ch_h, chs_in_w*chromic_chs*ch_w)).astype(np.uint8), cmap='gray')
 #     tensor = torch.zeros_like(sorted_tensor)
 #     tensor[sorted_chs,:,:] = sorted_tensor
+#     img = plt.imshow(tensor.cpu().numpy().reshape((chs_in_h,chs_in_w*chromic_chs,ch_h, ch_w)).swapaxes(1,2).reshape((chs_in_h*ch_h, chs_in_w*chromic_chs*ch_w)).astype(np.uint8), cmap='gray')
 #     tensor = tensor / 255 * (maxs - mins) + mins
+#     img = plt.imshow(tensor.cpu().numpy().reshape((chs_in_h,chs_in_w*chromic_chs,ch_h, ch_w)).swapaxes(1,2).reshape((chs_in_h*ch_h, chs_in_w*chromic_chs*ch_w)), cmap='gray')
 #     return tensor
 
 def tiled_to_tensor(tiled, ch_w, ch_h, ranges, sorted_chs):
