@@ -174,7 +174,7 @@ class CompressibilityLoss:
         loss_items = torch.zeros(1, device=self.device)
         loss_items[0] = self.DCT_rate(Z)
         loss = self.weight * loss_items
-        return loss, loss_items
+        return loss, loss_items.detach()
 
 
     def DCT_rate(self, feature):    
@@ -275,6 +275,20 @@ class CompressibilityLoss:
         G_t  = (G_x_2+G_y_3) * scale.expand_as(G_x_2+G_y_3)
         return G_t
 
+class ComputeRecLoss:
+    def __init__(self, MAX):
+        self.MAX = MAX
+    def __call__(self, T1, T2):
+        device = T1.device
+        loss_l1, loss_l2, psnr = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
+        loss_l1[0] = l1_loss(T1, T2)
+        mse = mse_loss(T1, T2, reduction='none').mean((2,3))
+        loss_l2[0] = torch.mean(mse)
+        psnr_per_feature = 10 * torch.log10(self.MAX**2 / mse)
+        psnr[0] = torch.mean(psnr_per_feature)
+
+        loss = loss_l2
+        return loss, torch.cat((loss_l1, loss_l2, psnr)).detach()
 
 class ComputeLossME:
     def __init__(self, device, MAX, w_features):

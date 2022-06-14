@@ -120,7 +120,9 @@ def run(data,
         callbacks=Callbacks(),
         compute_loss=None,
         compressibility_loss=None,
+        compute_rec_loss = None,
         autoencoder=None,
+        rec_model = None
         ):
     # Initialize/load model and set device
     training = model is not None
@@ -184,6 +186,7 @@ def run(data,
     s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     dt, p, r, f1, mp, mr, map50, map = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     loss = torch.zeros(3, device=device)
+    loss_rec = torch.zeros(3, device=device)
     loss_r = torch.zeros(1, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
     L1, L2, SATD = [], [], []
@@ -210,6 +213,9 @@ def run(data,
                 stats_bottleneck.update_stats(T_bottleneck.detach().clone().cpu().numpy())
             if compressibility_loss:
                 loss_r += compressibility_loss(T_bottleneck.float())[1]
+            if compute_rec_loss:
+                rec_img = rec_model(T_bottleneck)
+                loss_rec += compute_rec_loss(img, rec_img)[1]
         else:
             N=None
             if add_noise:
@@ -381,7 +387,7 @@ def run(data,
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    loss_tot = torch.cat((loss, loss_r))
+    loss_tot = torch.cat((loss, loss_r, loss_rec))
     return (mp, mr, map50, map, *(loss_tot.cpu() / len(dataloader)).tolist()), maps, t
 
 

@@ -51,6 +51,7 @@ class Loggers():
                                'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',  # metrics
                                'val/box_loss', 'val/obj_loss', 'val/cls_loss', 'val/loss_o', 'val/fid_loss(mse)', 'val/bpp_loss', 'val/enc_loss', 'val/aux_loss', 'val/loss',  # val loss
                                'x/lr']  # params
+        self.keys_rec = ['train/mae', 'train/mse', 'train/psnr', 'val/mae', 'val/mse', 'val/psnr']
         for k in LOGGERS:
             setattr(self, k, None)  # init empty logger dictionary
         self.csv = True  # always log to csv
@@ -98,6 +99,25 @@ class Loggers():
                 files = sorted(self.save_dir.glob('train*.jpg'))
                 self.wandb.log({'Mosaics': [wandb.Image(str(f), caption=f.name) for f in files if f.exists()]})
 
+    def on_train_epoch_end_adversary(self, vals, epoch, pic):
+        # Callback runs at the end of each fit (train+val) epoch
+        x = {k: v for k, v in zip(self.keys_rec, vals)}  # dict
+        if self.csv:
+            file = self.save_dir / 'results_rec.csv'
+            n = len(x) + 1  # number of cols
+            s = '' if file.exists() else (('%20s,' * n % tuple(['epoch'] + self.keys_rec)).rstrip(',') + '\n')  # add header
+            with open(file, 'a') as f:
+                f.write(s + ('%20.5g,' * n % tuple([epoch] + vals)).rstrip(',') + '\n')
+
+        if self.tb:
+            for k, v in x.items():
+                self.tb.add_scalar(k, v, epoch)
+
+        if self.wandb:
+            self.wandb.log(x)
+            # self.wandb.end_epoch(best_result=False)
+            self.wandb.log({"Reconstruction": wandb.Image(str(pic), caption=pic.name)})
+
     def on_train_epoch_end(self, epoch):
         # Callback runs on train epoch end
         if self.wandb:
@@ -131,6 +151,18 @@ class Loggers():
         if self.wandb:
             self.wandb.log(x)
             self.wandb.end_epoch(best_result=best_fitness == fi)
+
+    def on_fit_epoch_end_adversary(self, vals, epoch):
+        # Callback runs at the end of each fit (train+val) epoch
+        x = {k: v for k, v in zip(self.keys_rec, vals)}  # dict
+
+        if self.tb:
+            for k, v in x.items():
+                self.tb.add_scalar(k, v, epoch)
+
+        if self.wandb:
+            self.wandb.log(x)
+            self.wandb.end_epoch(best_result=False)
 
     def on_fit_epoch_end_me(self, vals, epoch, best_fitness, fi):
         # Callback runs at the end of each fit (train+val) epoch

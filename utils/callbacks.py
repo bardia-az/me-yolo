@@ -22,6 +22,9 @@ class Callbacks:
         'on_train_batch_end': [],
         'on_train_epoch_end': [],
 
+        'on_train_epoch_end_adversary': [],
+        'on_fit_epoch_end_adversary': [],
+
         'on_val_start': [],
         'on_val_batch_start': [],
         'on_val_image_end': [],

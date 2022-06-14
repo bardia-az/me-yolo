@@ -17,6 +17,75 @@ import torch.nn.init as init
 import torchvision
 import itertools
 
+################ Input Reconstruction Decoder #######################
+class Bottleneck_Inv(nn.Module):
+    # Standard bottleneck
+    def __init__(self, c1, c2, shortcut=True, g=1, e=1.0):  # ch_in, ch_out, shortcut, groups, expansion
+        super().__init__()
+        c_ = int(c1 * e)  # hidden channels
+        self.cv1 = Conv(c1, c_, 3, 1, g=g)
+        self.cv2 = Conv(c_, c2, 1, 1)
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x):
+        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+
+class C3_Inv(nn.Module):
+    # CSP Bottleneck with 3 convolutions
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
+        super().__init__()
+        c_ = int(c1 * e)  # hidden channels
+        self.cv1 = Conv(c1, 2 * c_, 1)  # act=FReLU(c2)
+        self.cv2 = Conv(c_, c2, 1, 1)
+        self.cv3 = Conv(c_, c2, 1, 1)  
+        self.m = nn.Sequential(*(Bottleneck_Inv(c_, c_, shortcut, g, e=1.0) for _ in range(n)))
+        # self.m = nn.Sequential(*[CrossConv(c_, c_, 3, 1, g, 1.0, shortcut) for _ in range(n)])
+
+    def forward(self, x):
+        # return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), dim=1))
+        y = self.cv1(x)
+        y1, y2 = torch.chunk(y, 2, dim=1)
+        return self.cv2(y2) + self.cv3(self.m(y1))
+
+class Conv_Inv(nn.Module):
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True) -> None:
+        super().__init__()
+        op = s-1 if (k % 2) == 1 else s-2
+        self.deconv = nn.ConvTranspose2d(c1, c2, k, s, padding=autopad(k, p), output_padding=op, groups=g)
+        self.bn = nn.BatchNorm2d(c2)
+        self.act = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
+
+    def forward(self, x):
+        return self.act(self.bn(self.deconv(x)))
+
+class Decoder_Rec(nn.Module):
+    def __init__(self, autoenc_chs, cout, e=0.5):
+        super().__init__()
+        cin = autoenc_chs[0]
+        c1 = int(cin * e)
+        c2 = int(c1 * e)
+        layers = [
+            Decoder(autoenc_chs, k=3, s=1),
+            C3_Inv(cin, cin, n=4),
+            Conv_Inv(cin, c1, k=3, s=2),
+            C3_Inv(c1, c1, n=2),
+            Conv_Inv(c1, c2, k=3, s=2),
+            Conv_Inv(c2, cout, k=6, s=2, p=2),
+        ]
+        LOGGER.info(f"\n{'':>3}{'params':>10}  {'module':<40}")
+        for i, layer in enumerate(layers):
+            np = sum(x.numel() for x in layer.parameters())  # number params
+            LOGGER.info(f'{i:>3}{np:10.0f}  {str(type(layer))[8:-2]:<40}')  # print
+        self.net = nn.Sequential(*(layers))
+
+    def forward(self,x):
+        return self.net(x)
+
+        # Conv([3, 48, 6, 2, 2])
+        # Conv([48, 96, 3, 2])
+        # C3([96, 96, 2])
+        # Conv([96, 192, 3, 2])
+        # C3([192, 192, 4])
 
 ################## Auto Encoder ######################
 class Encoder(nn.Module):
