@@ -583,7 +583,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     if RANK in [-1, 0]:
         del model, autoencoder, rec_model
         del optimizer, rec_optimizer
-        del T, T_bottleneck, T_hat, img, imgs, im, pred, rec, rec_img, rec_imgs
+        del T, T_bottleneck, img, rec, rec_img
         torch.cuda.empty_cache()
         LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
         for f in last, best:
