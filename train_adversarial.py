@@ -422,6 +422,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             # end batch ------------------------------------------------------------------------------------------------
         # ------- validation -------- #
         if RANK in [-1, 0]:
+            del T, T_bottleneck, T_hat, imgs, pred, rec_imgs, 
+            torch.cuda.empty_cache()
             # mAP
             callbacks.run('on_train_epoch_end', epoch=epoch)
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'names', 'stride', 'class_weights'])
@@ -500,6 +502,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             # end batch ------------------------------------------------------------------------------------------------
         # ------- validation -------- #
         if RANK in [-1, 0]:
+            del T, T_bottleneck, imgs, rec_imgs
+            torch.cuda.empty_cache()
             s = (('%20s' + '%11s' * 2) % ('mae', 'mse', 'psnr'))
             rec_val_loss_items = torch.zeros(3, device=device)
             rec_picture = rec_dir / Path(f'{epoch:03}.jpeg')
@@ -579,7 +583,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     if RANK in [-1, 0]:
         del model, autoencoder, rec_model
         del optimizer, rec_optimizer
-        del T, T_bottleneck, T_hat, img, imgs, im, pred, rec, rec_img, rec_imgs, 
+        del T, T_bottleneck, T_hat, img, imgs, im, pred, rec, rec_img, rec_imgs
         torch.cuda.empty_cache()
         LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
         for f in last, best:
