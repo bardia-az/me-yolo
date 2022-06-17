@@ -285,7 +285,7 @@ def val_closed_loop(opt,
 
     optimal_qp_for_I_frames = 28
     ref_num = 2
-    ch_w, ch_h = 128, 128
+    ch_w, ch_h = opt.ch_dim, opt.ch_dim
     ch_num_w, ch_num_h = (tensors_w//ch_w), (tensors_h//ch_h)
     ch_num = ch_num_w * ch_num_h
     ref_tensors = torch.zeros((ref_num, ch_num, ch_w, ch_h), device=device, dtype=torch.half if half else torch.float)
@@ -580,6 +580,7 @@ def parse_opt():
     parser.add_argument('--qp', type=int, default=24, help='QP for the vvc encoder')
     parser.add_argument('--tensors-w', type=int, default=1024, help='width of the tiled tensor frames')
     parser.add_argument('--tensors-h', type=int, default=1024, help='height of the tiled tensor frames')
+    parser.add_argument('--ch-dim', type=int, default=128, help='height or width of the channels in the latent space')
     parser.add_argument('--tensors-min', type=float, default=-0.2786, help='the clipping lower bound for the intermediate tensors')
     parser.add_argument('--tensors-max', type=float, default=1.4, help='the clipping upper bound for the intermediate tensors')
     parser.add_argument('--res-min', type=float, default=-1, help='the clipping lower bound for the residuals')
