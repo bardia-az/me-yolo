@@ -162,6 +162,10 @@ def run(data,
             del supp_ckpt
             autoencoder.half() if half else autoencoder.float()
             autoencoder.eval()
+    if rec_model is not None:
+        rec_model.eval()
+    if autoencoder is not None:
+        autoencoder.eval()
 
     # Configure
     model.eval()

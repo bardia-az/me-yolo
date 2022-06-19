@@ -343,6 +343,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         for k, m in model.named_modules():
             if any(x == k for x in freeze):
                 m.eval()
+        autoencoder.train()
+        rec_model.eval()
 
         # Update image weights (optional, single-GPU only)
         if opt.image_weights:
@@ -450,6 +452,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
         # starting training the reconstruction model
         model.eval()
+        autoencoder.eval()
+        rec_model.train()
         rec_mloss = torch.zeros(3, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
@@ -474,8 +478,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
             # Forward
             with amp.autocast(enabled=cuda):
-                T = model(imgs, cut_model=1)  # first half of the model
-                T_bottleneck = autoencoder(T, task='enc')
+                with torch.no_grad():
+                    T = model(imgs, cut_model=1)  # first half of the model
+                    T_bottleneck = autoencoder(T, task='enc')
                 rec_imgs = rec_model(T_bottleneck)
                 rec_loss, rec_loss_items = compute_rec_loss(imgs, rec_imgs)
                 if RANK != -1:
@@ -504,29 +509,33 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         if RANK in [-1, 0]:
             del T, T_bottleneck, imgs, rec_imgs
             torch.cuda.empty_cache()
-            s = (('%20s' + '%11s' * 2) % ('mae', 'mse', 'psnr'))
-            rec_val_loss_items = torch.zeros(3, device=device)
-            rec_picture = rec_dir / Path(f'{epoch:03}.jpeg')
-            pic_found = False
-            for batch_i, (img, targets, paths, _) in enumerate(tqdm(val_loader, desc=s)):
-                img = img.to(device, non_blocking=True).float() / 255
-                T = model(img, cut_model=1)  # first half of the model
-                T_bottleneck = autoencoder(T, task='enc')
-                rec_img = rec_model(T_bottleneck)
-                rec_val_loss_items += compute_rec_loss(img, rec_img)[1]
-                if not pic_found:
-                    for rec, path in zip(list(rec_img), paths):
-                        if str(path).endswith('000000000885.jpg'):      # for coco
-                        # if str(path).endswith('000000000241.jpg'):    # for coco128
-                            pic = (rec.detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-                            im = Image.fromarray(np.moveaxis(pic,0,-1), 'RGB')
-                            im.save(rec_picture)
-                            pic_found = True
-            rec_val_loss_items = rec_val_loss_items.cpu() / len(val_loader)
-            pf = '%20.3g' + '%11.3g' * 2 # print format
-            LOGGER.info(pf % (*rec_val_loss_items,))
-            log_vals = list(rec_mloss) + list(rec_val_loss_items)
-            callbacks.run('on_train_epoch_end_adversary', log_vals, epoch, rec_picture)
+            model.eval()
+            autoencoder.eval()
+            rec_model.eval()
+            with torch.no_grad():
+                s = (('%20s' + '%11s' * 2) % ('mae', 'mse', 'psnr'))
+                rec_val_loss_items = torch.zeros(3, device=device)
+                rec_picture = rec_dir / Path(f'{epoch:03}.jpeg')
+                pic_found = False
+                for batch_i, (img, targets, paths, _) in enumerate(tqdm(val_loader, desc=s)):
+                    img = img.to(device, non_blocking=True).float() / 255
+                    T = model(img, cut_model=1)  # first half of the model
+                    T_bottleneck = autoencoder(T, task='enc')
+                    rec_img = rec_model(T_bottleneck)
+                    rec_val_loss_items += compute_rec_loss(img, rec_img)[1]
+                    if not pic_found:
+                        for rec, path in zip(list(rec_img), paths):
+                            if str(path).endswith('000000000885.jpg'):      # for coco
+                            # if str(path).endswith('000000000241.jpg'):    # for coco128
+                                pic = (rec.detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+                                im = Image.fromarray(np.moveaxis(pic,0,-1), 'RGB')
+                                im.save(rec_picture)
+                                pic_found = True
+                rec_val_loss_items = rec_val_loss_items.cpu() / len(val_loader)
+                pf = '%20.3g' + '%11.3g' * 2 # print format
+                LOGGER.info(pf % (*rec_val_loss_items,))
+                log_vals = list(rec_mloss) + list(rec_val_loss_items)
+                callbacks.run('on_train_epoch_end_adversary', log_vals, epoch, rec_picture)
         # end epoch of training the adversary -----------------------------------------------------------------------------------
 
 
