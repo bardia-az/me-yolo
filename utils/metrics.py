@@ -22,6 +22,11 @@ def fitness_e2e(x):
     w = [0.0, 0.0, 0.01, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, -0.89, 0.0, 0.0, 0.0]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95, box, obj, cls, loss_o, mse_loss, bpp_loss, enc_loss, aux_loss, loss_tot]
     return (x * w).sum(1)
 
+def fitness_adv(x, psnr):
+    # Model fitness as a weighted combination of metrics (the weights are effective only for yolov5m model)
+    w = [0.0, 0.0, 0.1, 0.9]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
+    return (x[:, :4] * w).sum(1) - psnr / 7
+
 
 def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names=()):
     """ Compute the average precision, given the recall and precision curves.

@@ -50,7 +50,7 @@ from utils.loss import ComputeLoss, CompressibilityLoss, ComputeRecLoss
 from utils.plots import plot_labels, plot_evolve
 from utils.torch_utils import EarlyStopping, ModelEMA, de_parallel, select_device, torch_distributed_zero_first
 from utils.loggers.wandb.wandb_utils import check_wandb_resume
-from utils.metrics import fitness
+from utils.metrics import fitness_adv
 from utils.loggers import Loggers
 from utils.callbacks import Callbacks
 
@@ -238,7 +238,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     ema = ModelEMA(model) if RANK in [-1, 0] else None
 
     # Resume
-    start_epoch, best_fitness = 0, 0.0
+    start_epoch, best_fitness = 0, float('-inf')
     if pretrained:
         # Optimizer
         if ckpt['optimizer'] is not None:
@@ -332,123 +332,125 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     stopper = EarlyStopping(patience=opt.patience)
     compute_loss = ComputeLoss(model)  # init loss class
     compute_rec_loss = ComputeRecLoss(MAX=1.0)  # init loss class
+    mloss = torch.zeros(7, device=device)  # mean losses
     # compressibility_loss = CompressibilityLoss(device, opt.w_compress)
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers} dataloader workers\n'
                 f"Logging results to {colorstr('bold', save_dir)}\n"
                 f'Starting training for {epochs} epochs...')
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
-        # starting training the object detection model
-        model.train()
-        for k, m in model.named_modules():
-            if any(x == k for x in freeze):
-                m.eval()
-        autoencoder.train()
-        rec_model.eval()
+        if not opt.rec_only:
+            # starting training the object detection model
+            model.train()
+            for k, m in model.named_modules():
+                if any(x == k for x in freeze):
+                    m.eval()
+            autoencoder.train()
+            rec_model.eval()
 
-        # Update image weights (optional, single-GPU only)
-        if opt.image_weights:
-            cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc  # class weights
-            iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
-            dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
+            # Update image weights (optional, single-GPU only)
+            if opt.image_weights:
+                cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc  # class weights
+                iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
+                dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
 
-        mloss = torch.zeros(7, device=device)  # mean losses
-        if RANK != -1:
-            train_loader.sampler.set_epoch(epoch)
-        pbar = enumerate(train_loader)
-        LOGGER.info('\ntraining the object detection network ...')
-        LOGGER.info(('%10s' * 11) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'cmprss', 'mae', 'mse', 'psnr', 'labels', 'img_size'))
-        if RANK in [-1, 0]:
-            pbar = tqdm(pbar, total=nb)  # progress bar
-        optimizer.zero_grad()
-        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
-            ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
-
-            # Warmup
-            if ni <= nw:
-                xi = [0, nw]  # x interp
-                accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
-                for j, x in enumerate(optimizer.param_groups):
-                    # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
-                    x['lr'] = np.interp(ni, xi, [hyp['warmup_bias_lr'] if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
-                    if 'momentum' in x:
-                        x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
-
-            # Multi-scale
-            if opt.multi_scale:
-                sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
-                sf = sz / max(imgs.shape[2:])  # scale factor
-                if sf != 1:
-                    ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
-                    imgs = nn.functional.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
-
-            # Forward
-            with amp.autocast(enabled=cuda):
-                T = model(imgs, cut_model=1)  # first half of the model
-                T_bottleneck = autoencoder(T, task='enc')
-                T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
-                pred = model(None, cut_model=2, T=T_hat)  # second half of the model
-                rec_imgs = rec_model(T_bottleneck)
-
-                rec_loss, rec_loss_items = compute_rec_loss(imgs, rec_imgs)
-                loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                # loss_r, loss_items_r = compressibility_loss(T_bottleneck)
-                loss_r, loss_items_r = 0, torch.zeros(1, device=device)
-                loss_items = torch.cat((loss_items, loss_items_r, rec_loss_items))
-                loss = loss_o + loss_r - opt.w_rec * rec_loss
-                if RANK != -1:
-                    loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
-                if opt.quad:
-                    loss *= 4.
-
-            # Backward
-            scaler.scale(loss).backward()
-
-            # Optimize
-            if ni - last_opt_step_obj >= accumulate:
-                scaler.step(optimizer)  # optimizer.step
-                scaler.update()
-                optimizer.zero_grad()
-                if ema:
-                    ema.update(model)
-                last_opt_step_obj = ni
-
-            # Log
+            mloss = torch.zeros(7, device=device)  # mean losses
+            if RANK != -1:
+                train_loader.sampler.set_epoch(epoch)
+            pbar = enumerate(train_loader)
+            LOGGER.info('\ntraining the object detection network ...')
+            LOGGER.info(('%10s' * 11) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'cmprss', 'mae', 'mse', 'psnr', 'labels', 'img_size'))
             if RANK in [-1, 0]:
-                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-                mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%10s' * 2 + '%10.4g' * 9) % (
-                    f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
-                callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
-            # end batch ------------------------------------------------------------------------------------------------
-        # ------- validation -------- #
-        if RANK in [-1, 0]:
-            del T, T_bottleneck, T_hat, imgs, pred, rec_imgs, 
-            torch.cuda.empty_cache()
-            # mAP
-            callbacks.run('on_train_epoch_end', epoch=epoch)
-            ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'names', 'stride', 'class_weights'])
-            final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
-            if not noval or final_epoch:  # Calculate mAP
-                results, maps, _ = val.run(data_dict,
-                                           batch_size=batch_size // WORLD_SIZE * 2,
-                                           imgsz=imgsz,
-                                           model=ema.ema,
-                                           single_cls=single_cls,
-                                           dataloader=val_loader,
-                                           save_dir=save_dir,
-                                           plots=False,
-                                           callbacks=callbacks,
-                                           compute_loss=compute_loss,
-                                        #    compressibility_loss=compressibility_loss,
-                                           compute_rec_loss=compute_rec_loss,
-                                           autoencoder=deepcopy(autoencoder).half(),
-                                           rec_model=deepcopy(rec_model).half())
+                pbar = tqdm(pbar, total=nb)  # progress bar
+            optimizer.zero_grad()
+            for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+                ni = i + nb * epoch  # number integrated batches (since train start)
+                imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
 
-            log_vals = list(mloss[-3:]) + list(results)[-3:]
-            callbacks.run('on_fit_epoch_end_adversary', log_vals, epoch)
-        # end epoch of training the object detection model -------------------------------------------------------------
+                # Warmup
+                if ni <= nw:
+                    xi = [0, nw]  # x interp
+                    accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
+                    for j, x in enumerate(optimizer.param_groups):
+                        # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
+                        x['lr'] = np.interp(ni, xi, [hyp['warmup_bias_lr'] if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
+                        if 'momentum' in x:
+                            x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
+
+                # Multi-scale
+                if opt.multi_scale:
+                    sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
+                    sf = sz / max(imgs.shape[2:])  # scale factor
+                    if sf != 1:
+                        ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
+                        imgs = nn.functional.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
+
+                # Forward
+                with amp.autocast(enabled=cuda):
+                    T = model(imgs, cut_model=1)  # first half of the model
+                    T_bottleneck = autoencoder(T, task='enc')
+                    T_hat = autoencoder(T, task='dec', bottleneck=T_bottleneck)
+                    pred = model(None, cut_model=2, T=T_hat)  # second half of the model
+                    rec_imgs = rec_model(T_bottleneck)
+
+                    rec_loss, rec_loss_items = compute_rec_loss(imgs, rec_imgs)
+                    loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                    # loss_r, loss_items_r = compressibility_loss(T_bottleneck)
+                    loss_r, loss_items_r = 0, torch.zeros(1, device=device)
+                    loss_items = torch.cat((loss_items, loss_items_r, rec_loss_items))
+                    loss = loss_o + loss_r - opt.w_rec * rec_loss
+                    if RANK != -1:
+                        loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
+                    if opt.quad:
+                        loss *= 4.
+
+                # Backward
+                scaler.scale(loss).backward()
+
+                # Optimize
+                if ni - last_opt_step_obj >= accumulate:
+                    scaler.step(optimizer)  # optimizer.step
+                    scaler.update()
+                    optimizer.zero_grad()
+                    if ema:
+                        ema.update(model)
+                    last_opt_step_obj = ni
+
+                # Log
+                if RANK in [-1, 0]:
+                    mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+                    mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
+                    pbar.set_description(('%10s' * 2 + '%10.4g' * 9) % (
+                        f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
+                    callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
+                # end batch ------------------------------------------------------------------------------------------------
+            # ------- validation -------- #
+            if RANK in [-1, 0]:
+                del T, T_bottleneck, T_hat, imgs, pred, rec_imgs, 
+                torch.cuda.empty_cache()
+                # mAP
+                callbacks.run('on_train_epoch_end', epoch=epoch)
+                ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'names', 'stride', 'class_weights'])
+                final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
+                if not noval or final_epoch:  # Calculate mAP
+                    results, maps, _ = val.run(data_dict,
+                                            batch_size=batch_size // WORLD_SIZE * 2,
+                                            imgsz=imgsz,
+                                            model=ema.ema,
+                                            single_cls=single_cls,
+                                            dataloader=val_loader,
+                                            save_dir=save_dir,
+                                            plots=False,
+                                            callbacks=callbacks,
+                                            compute_loss=compute_loss,
+                                            #    compressibility_loss=compressibility_loss,
+                                            compute_rec_loss=compute_rec_loss,
+                                            autoencoder=deepcopy(autoencoder).half(),
+                                            rec_model=deepcopy(rec_model).half())
+
+                log_vals = list(mloss[-3:]) + list(results)[-3:]
+                callbacks.run('on_fit_epoch_end_adversary', log_vals, epoch)
+            # end epoch of training the object detection model -------------------------------------------------------------
 
         # starting training the reconstruction model
         model.eval()
@@ -512,6 +514,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             model.eval()
             autoencoder.eval()
             rec_model.eval()
+            final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
             with torch.no_grad():
                 s = (('%20s' + '%11s' * 2) % ('mae', 'mse', 'psnr'))
                 rec_val_loss_items = torch.zeros(3, device=device)
@@ -547,7 +550,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         
         if RANK in [-1, 0]:
             # Update best mAP
-            fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+            fi = fitness_adv(np.array(results).reshape(1, -1), rec_val_loss_items.numpy()[2])  # weighted combination of [P, R, mAP@.5, mAP@.5-.95, psnr]
             if fi > best_fitness:
                 best_fitness = fi
                 best_epoch = epoch
@@ -585,7 +588,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             # Stop Single-GPU
             if RANK == -1 and stopper(epoch=epoch, fitness=fi):
                 break
-        
+
+    LOGGER.info(f'\nThe best fitness is {best_fitness[0]:.3f} associated with epoch {best_epoch}')    
     # end training -----------------------------------------------------------------------------------------------------
 
     
@@ -688,6 +692,7 @@ def parse_opt(known=False):
     parser.add_argument('--rec-weights', type=str, default=None, help='initial weights path for the reconstructor')
     parser.add_argument('--train-yolo', type=str, default='all', help='which part of the yolo gets trained: backend, all, nothing')
     parser.add_argument('--freeze-autoenc', action='store_true', help='determins autoencoder weights to be freezed')
+    parser.add_argument('--rec-only', action='store_true', help='only train the reconstruction netweork')
 
     # Some of the hyperparameters
     parser.add_argument('--lr0', type=float, default=0.01, help='initial learning rate')
