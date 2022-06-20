@@ -165,8 +165,8 @@ def get_yolo_prediction(T, autoencoder, model):
 
 
 @torch.no_grad()
-def val_closed_loop(opt,
-                    callbacks=Callbacks()):
+def val_chromic(opt,
+                callbacks=Callbacks()):
 
     save_dir, batch_size, weights, single_cls, data, supp_weights, half, plots, chs_in_w, chs_in_h, \
         save_error, track_stats, tensor_video, save_tiled_tensor = \
@@ -238,7 +238,7 @@ def val_closed_loop(opt,
     if save_tiled_tensor:
         (save_dir / 'tiled_tensors').mkdir(parents=True, exist_ok=True)
         latent_video_name = (save_dir / 'tiled_tensors' / f'latent_{video_name}').with_suffix('.yuv')
-        # assert not (latent_video_name.exists()), 'This run has been done before. Videos are already available. Delete the corresponding tiled tensor videos to run again.'
+        assert not (latent_video_name.exists()), 'This run has been done before. Videos are already available. Delete the corresponding tiled tensor videos to run again.'
         latent_video_f = latent_video_name.open('ab')
     if tensor_video is not None:
         tensor_video_f = Path(tensor_video).open('rb')
@@ -251,7 +251,7 @@ def val_closed_loop(opt,
             error_dir = (save_dir / 'error_stats')
         
     chromic_chs = 3 if opt.chromic else 1
-    ch_w, ch_h = 64, 64
+    ch_w, ch_h = opt.ch_dim, opt.ch_dim
     ch_num = chs_in_w * chs_in_h * chromic_chs
     ranges = torch.from_numpy(np.load(Path(opt.load_dir) / 'range_channels.npy')).to(device, non_blocking=True)
     sorted_chs = np.load(Path(opt.load_dir) / 'sorted_channels.npy')
@@ -289,10 +289,10 @@ def val_closed_loop(opt,
             error = rec_tensors - tensors[0]
             if track_stats:
                 stats_error.update_stats(error.detach().clone().cpu().numpy())
-            # if save_error:
-                # tiled_error = tensors_to_tiled(error[None, :], chs_in_w, chs_in_h, res_min, res_max)
-                # error_data = tiled_error.cpu().numpy().flatten().astype(np.uint8)
-                # error_full_f.write(error_data)
+            if save_error:
+                tiled_error = tensors_to_tiled(error[None, :], chs_in_w, chs_in_h, chromic_chs, ranges, sorted_chs)
+                error_data = tiled_error.cpu().numpy().flatten().astype(np.uint8)
+                error_full_f.write(error_data)
 
         
             
@@ -489,11 +489,12 @@ def parse_opt():
     parser.add_argument('--dist-range',  type=float, nargs='*', default=[-4,4], help='the range of the distribution')
     parser.add_argument('--bins', type=int, default=10000, help='number of bins in histogram')
     parser.add_argument('--qp', type=int, default=24, help='QP for the vvc encoder')
-    parser.add_argument('--chs_in_w', type=int, help='number of channels is width in the tiled tensor')
-    parser.add_argument('--chs_in_h', type=int, help='number of channels is height in the tiled tensor')
+    parser.add_argument('--chs-in-w', type=int, help='number of channels is width in the tiled tensor')
+    parser.add_argument('--chs-in-h', type=int, help='number of channels is height in the tiled tensor')
+    parser.add_argument('--ch-dim', type=int, default=64, help='height or width of the channels in the latent space')
     parser.add_argument('--save-error', action='store_true', help='save the error video')
     parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
-    parser.add_argument('--save-tiled_tensor', action='store_true', help='This flag indicates saving the latent space video')
+    parser.add_argument('--save-tiled-tensor', action='store_true', help='This flag indicates saving the latent space video')
     parser.add_argument('--tensor-video', type=str, default=None, help='the path of the tiled tensor video')
     parser.add_argument('--res-per-frame', action='store_true', help='save the mAP results per frame')
     parser.add_argument('--chromic', action='store_true', help='make a chromic tiled tensor video, otherwise it would be luma only channels')
@@ -516,11 +517,11 @@ def main(opt):
     (save_dir / 'labels' if opt.save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
     opt.save_dir = str(save_dir)
 
-    val_closed_loop(opt)
+    val_chromic(opt)
 
 
 def run(**kwargs):
-    # Usage: import val_closed_loop; val_closed_loop.run(data='coco128.yaml', imgsz=320, weights='yolov5m.pt')
+    # Usage: import val_chromic; val_chromic.run(data='coco128.yaml', imgsz=320, weights='yolov5m.pt')
     opt = parse_opt(True)
     for k, v in kwargs.items():
         setattr(opt, k, v)
