@@ -325,7 +325,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     last_opt_step = -1
     last_opt_step_obj = -1
     maps = np.zeros(nc)  # mAP per class
-    results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
+    results = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls),  val_loss(compressibility), val_loss(mae, mse, psnr)
     scheduler.last_epoch = start_epoch - 1  # do not move
     rec_scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
@@ -528,8 +528,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     rec_val_loss_items += compute_rec_loss(img, rec_img)[1]
                     if not pic_found:
                         for rec, path in zip(list(rec_img), paths):
-                            if str(path).endswith('000000000885.jpg'):      # for coco
-                            # if str(path).endswith('000000000241.jpg'):    # for coco128
+                            # if str(path).endswith('000000000885.jpg'):      # for coco
+                            if str(path).endswith('000000000241.jpg'):    # for coco128
                                 pic = (rec.detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
                                 im = Image.fromarray(np.moveaxis(pic,0,-1), 'RGB')
                                 im.save(rec_picture)
