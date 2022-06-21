@@ -188,10 +188,10 @@ def val_chromic(opt,
     video_name = data.split('/')[-1].split('.')[0]
     video = f'{video_name}_QP{opt.qp}'
     data = check_dataset(data, suffix=opt.data_suffix)  # check
-    # if tensor_video is not None:
-    #     tensor_video = Path(tensor_video)
-        # tensor_video_vvc = (tensor_video / video_name).with_suffix('.bin')
-        # tensor_video = (tensor_video / video_name).with_suffix('.yuv')
+    if tensor_video is not None:
+        tensor_video = Path(tensor_video)
+        tensor_video_vvc = (tensor_video / video_name).with_suffix('.bin')
+        tensor_video = (tensor_video / video_name).with_suffix('.yuv')
 
     # Half
     half &= device.type != 'cpu'  # half precision only supported on CUDA
@@ -241,7 +241,7 @@ def val_chromic(opt,
         assert not (latent_video_name.exists()), 'This run has been done before. Videos are already available. Delete the corresponding tiled tensor videos to run again.'
         latent_video_f = latent_video_name.open('ab')
     if tensor_video is not None:
-        tensor_video_f = Path(tensor_video).open('rb')
+        tensor_video_f = tensor_video.open('rb')
         if save_error:
             (save_dir / 'error').mkdir(parents=True, exist_ok=True)
             error_full_name = (save_dir / 'error' / f'error_{video}').with_suffix('.yuv')
@@ -387,9 +387,9 @@ def val_chromic(opt,
         nt = torch.zeros(1)
 
     bit_rate, Byte_num = 0, 0
-    # if tensor_video is not None:
-    #     Byte_num = os.path.getsize(tensor_video_vvc)/1024.0
-    #     bit_rate = Byte_num * 8 * data['frame_rate'] / len(video_sequence)
+    if tensor_video is not None:
+        Byte_num = os.path.getsize(tensor_video_vvc)/1024.0
+        bit_rate = Byte_num * 8 * data['frame_rate'] / len(video_sequence)
 
     # Print results   
     pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
