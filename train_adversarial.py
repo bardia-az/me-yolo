@@ -528,8 +528,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     rec_val_loss_items += compute_rec_loss(img, rec_img)[1]
                     if not pic_found:
                         for rec, path in zip(list(rec_img), paths):
-                            # if str(path).endswith('000000000885.jpg'):      # for coco
-                            if str(path).endswith('000000000241.jpg'):    # for coco128
+                            if str(path).endswith('000000000885.jpg'):      # for coco
+                            # if str(path).endswith('000000000241.jpg'):    # for coco128
                                 pic = (rec.detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
                                 im = Image.fromarray(np.moveaxis(pic,0,-1), 'RGB')
                                 im.save(rec_picture)
