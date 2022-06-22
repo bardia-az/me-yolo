@@ -550,7 +550,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         
         if RANK in [-1, 0]:
             # Update best mAP
-            fi = fitness_adv(np.array(results).reshape(1, -1), rec_val_loss_items.numpy()[2])  # weighted combination of [P, R, mAP@.5, mAP@.5-.95, psnr]
+            rec_fitness = rec_val_loss_items.numpy()[2] if opt.rec_only else -rec_val_loss_items.numpy()[2]
+            fi = fitness_adv(np.array(results).reshape(1, -1), rec_fitness)  # weighted combination of [P, R, mAP@.5, mAP@.5-.95, psnr]
             if fi > best_fitness:
                 best_fitness = fi
                 best_epoch = epoch
