@@ -422,7 +422,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
                 best_fitness = fi
-            log_vals = list(mloss) + list(results) + lr
+            log_vals = list(mloss) + list(results)[:-3] + lr
             callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
 
             # Save model
@@ -484,7 +484,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                             compressibility_loss = compressibility_loss,
                                             autoencoder=best_autoencoder.half())
                     if is_coco:
-                        callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
+                        callbacks.run('on_fit_epoch_end', list(mloss) + list(results)[:-3] + lr, epoch, best_fitness, fi)
 
         callbacks.run('on_train_end', last, best, plots, epoch, results)
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}")
