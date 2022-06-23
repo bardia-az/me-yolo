@@ -44,7 +44,7 @@ from utils.datasets import create_dataloader
 from utils.general import (LOGGER, check_dataset, check_file, check_git_status, check_img_size, check_requirements,
                            check_suffix, check_yaml, colorstr, get_latest_run, increment_path, init_seeds,
                            intersect_dicts, labels_to_class_weights, labels_to_image_weights, methods, one_cycle,
-                           print_args, print_mutation, strip_optimizer, print_args_to_file)
+                           print_args, print_mutation, strip_optimizer, print_args_to_file, make_divisible)
 from utils.downloads import attempt_download
 from utils.loss import ComputeLoss, CompressibilityLoss, ComputeRecLoss
 from utils.plots import plot_labels, plot_evolve
@@ -65,20 +65,20 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
           device,
           callbacks
           ):
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, supp_weights, rec_weights, train_yolo, freeze_autoenc= \
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, train_yolo, freeze_autoenc, cutting_layer, autoenc_chs= \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
-        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.supp_weights, opt.rec_weights, opt.train_yolo, opt.freeze_autoenc
+        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.train_yolo, opt.freeze_autoenc, opt.cut_layer, opt.autoenc_chs
 
     # Directories
     w = save_dir / 'weights'  # weights dir
     (w.parent if evolve else w).mkdir(parents=True, exist_ok=True)  # make dir
     last, best = w / 'last.pt', w / 'best.pt'
-    supp_last, supp_best = w / 'supp_last.pt', w / 'supp_best.pt'
-    rec_last, rec_best = w / 'rec_last.pt', w / 'rec_best.pt'
+    # supp_last, supp_best = w / 'supp_last.pt', w / 'supp_best.pt'
+    # rec_last, rec_best = w / 'rec_last.pt', w / 'rec_best.pt'
     rec_dir = (save_dir / 'reconstructions')
     rec_dir.mkdir(parents=True, exist_ok=True)
 
-    print_args_to_file(opt, save_dir / 'result.txt')
+    
 
     # Hyperparameters
     if isinstance(hyp, str):
@@ -90,11 +90,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     hyp['weight_decay'] = opt.weight_decay
     LOGGER.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
 
-    # Save run settings
-    with open(save_dir / 'hyp.yaml', 'w') as f:
-        yaml.safe_dump(hyp, f, sort_keys=False)
-    with open(save_dir / 'opt.yaml', 'w') as f:
-        yaml.safe_dump(vars(opt), f, sort_keys=False)
     data_dict = None
 
     # Loggers
@@ -121,39 +116,67 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     assert len(names) == nc, f'{len(names)} names found for nc={nc} dataset in {data}'  # check
     is_coco = isinstance(val_path, str) and val_path.endswith('coco/val2017.txt')  # COCO dataset
 
-    # Object Detection Model 
+    # Models 
     check_suffix(weights, '.pt')  # check weights
     pretrained = weights.endswith('.pt')
     if pretrained:
+        # ---- Object Detection Model -----#
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = Model(cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        cutting_layer = getattr(ckpt['model'], 'cutting_layer', False) or opt.cut_layer
+        model = Model(cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors'), cutting_layer=cutting_layer).to(device)  # create
         exclude = ['anchor'] if (cfg or hyp.get('anchors')) and not resume else []  # exclude keys
         csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f'Transferred {len(csd)}/{len(model.state_dict())} items from {weights}')  # report
+        # ---- Autoencoder -----#
+        if 'autoencoder' in ckpt:
+            autoenc_chs = ckpt['autoencoder'].chs
+            autoencoder = AutoEncoder(autoenc_chs).to(device)
+            autoencoder.load_state_dict(ckpt['autoencoder'].float().state_dict())
+            print('pretrained autoencoder')
+        else:
+            autoencoder = AutoEncoder(autoenc_chs).to(device)
+        # ---- Reconstruction Model -----#
+        if 'rec_model' in ckpt:
+            rec_model = Decoder_Rec(cin=ckpt['rec_model'].cin, cout=ckpt['rec_model'].cout, autoenc_chs=autoenc_chs).to(device)
+            rec_model.load_state_dict(ckpt['rec_model'].float().state_dict())
+            print('pretrained reconstruction model')
+        else:
+            rec_model = Decoder_Rec(cin=make_divisible((model.yaml['backbone'][cutting_layer][3][0]) * model.yaml['width_multiple'], 8), cout=3, autoenc_chs=autoenc_chs).to(device)
     else:
-        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
-    
-    # Autoencoder
-    autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
-    if supp_weights is not None:
-        assert supp_weights.endswith('.pt'), f'{supp_weights} -> file format is not supported'
-        supp_ckpt = torch.load(supp_weights, map_location=device)
-        autoencoder.load_state_dict(supp_ckpt['model'])
-        print('pretrained autoencoder')
-        del supp_ckpt
+        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors'), cutting_layer=cutting_layer).to(device)  # create
+        autoencoder = AutoEncoder(autoenc_chs).to(device)
+        rec_model = Decoder_Rec(cin=make_divisible((model.yaml['backbone'][cutting_layer][3][0]) * model.yaml['width_multiple'], 8), cout=3, autoenc_chs=autoenc_chs).to(device)
+    LOGGER.info(f'autoencoder channels: {autoenc_chs}')
+    # # Autoencoder
+    # autoencoder = AutoEncoder(autoenc_chs).to(device)
+    # if supp_weights is not None:
+    #     assert supp_weights.endswith('.pt'), f'{supp_weights} -> file format is not supported'
+    #     supp_ckpt = torch.load(supp_weights, map_location=device)
+    #     autoencoder.load_state_dict(supp_ckpt['model'])
+    #     print('pretrained autoencoder')
+    #     del supp_ckpt
 
-    # Input Reconstruction Model
-    rec_model = Decoder_Rec(opt.autoenc_chs, cout=3).to(device)
-    if rec_weights is not None:
-        assert rec_weights.endswith('.pt'), f'{rec_weights} -> file format is not supported'
-        rec_ckpt = torch.load(rec_ckpt, map_location=device)
-        rec_model.load_state_dict(rec_ckpt['model'])
-        print('pretrained reconstruction network')
-        del rec_ckpt
+    # # Input Reconstruction Model
+    # rec_model = Decoder_Rec(cin=make_divisible((model.yaml['backbone'][model.cutting_layer][3][0]) * model.yaml['width_multiple'], 8), cout=3, autoenc_chs=autoenc_chs).to(device)
+    # if rec_weights is not None:
+    #     assert rec_weights.endswith('.pt'), f'{rec_weights} -> file format is not supported'
+    #     rec_ckpt = torch.load(rec_ckpt, map_location=device)
+    #     rec_model.load_state_dict(rec_ckpt['model'])
+    #     print('pretrained reconstruction network')
+    #     del rec_ckpt
+
+    # Save run settings
+    opt.autoenc_chs = autoenc_chs
+    opt.cut_layer = cutting_layer
+    with open(save_dir / 'hyp.yaml', 'w') as f:
+        yaml.safe_dump(hyp, f, sort_keys=False)
+    with open(save_dir / 'opt.yaml', 'w') as f:
+        yaml.safe_dump(vars(opt), f, sort_keys=False)
+    print_args_to_file(opt, save_dir / 'result.txt')
 
     if freeze_autoenc:
         for param in autoencoder.parameters():
@@ -297,7 +320,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if not opt.noautoanchor:
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
             model.half().float()  # pre-reduce anchor precision
-            autoencoder.half().float()
+            # autoencoder.half().float()
 
         callbacks.run('on_pretrain_routine_end')
 
@@ -307,6 +330,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             model = DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
         if not freeze_autoenc:
             autoencoder = DDP(autoencoder, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
+        rec_model = DDP(rec_model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
 
     # Model parameters
     nl = de_parallel(model).model[-1].nl  # number of detection layers (to scale hyps)
@@ -333,6 +357,12 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     compute_loss = ComputeLoss(model)  # init loss class
     compute_rec_loss = ComputeRecLoss(MAX=1.0)  # init loss class
     mloss = torch.zeros(7, device=device)  # mean losses
+    if data.endswith('coco.yaml'):
+        sample_image = '000000000885.jpg'
+    elif data.endswith('coco128.yaml'):
+        sample_image = '000000000241.jpg'
+    else:
+        sample_image = ''
     # compressibility_loss = CompressibilityLoss(device, opt.w_compress)
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers} dataloader workers\n'
@@ -528,12 +558,12 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     rec_val_loss_items += compute_rec_loss(img, rec_img)[1]
                     if not pic_found:
                         for rec, path in zip(list(rec_img), paths):
-                            if str(path).endswith('000000000885.jpg'):      # for coco
-                            # if str(path).endswith('000000000241.jpg'):    # for coco128
+                            if str(path).endswith(sample_image):
                                 pic = (rec.detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
                                 im = Image.fromarray(np.moveaxis(pic,0,-1), 'RGB')
                                 im.save(rec_picture)
                                 pic_found = True
+                                break
                 rec_val_loss_items = rec_val_loss_items.cpu() / len(val_loader)
                 pf = '%20.3g' + '%11.3g' * 2 # print format
                 LOGGER.info(pf % (*rec_val_loss_items,))
@@ -567,23 +597,26 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                         'updates': ema.updates,
                         'optimizer': optimizer.state_dict(),
                         'wandb_id': loggers.wandb.wandb_run.id if loggers.wandb else None,
-                        'date': datetime.now().isoformat()}
-                supp_ckpt = {'model': deepcopy(de_parallel(autoencoder)).half().state_dict()}
-                rec_ckpt = {'model': deepcopy(de_parallel(rec_model)).half().state_dict()}
+                        'date': datetime.now().isoformat(),
+                        'autoencoder': deepcopy(de_parallel(autoencoder)).half(),
+                        'rec_model': deepcopy(de_parallel(rec_model)).half()}
+                # supp_ckpt = {'model': deepcopy(de_parallel(autoencoder)).half().state_dict()}
+                # rec_ckpt = {'model': deepcopy(de_parallel(rec_model)).half().state_dict()}
 
                 # Save last, best and delete
                 torch.save(ckpt, last)
-                torch.save(supp_ckpt, supp_last)
-                torch.save(rec_ckpt, rec_last)
+                # torch.save(supp_ckpt, supp_last)
+                # torch.save(rec_ckpt, rec_last)
                 if best_fitness == fi:
                     torch.save(ckpt, best)
-                    torch.save(supp_ckpt, supp_best)
-                    torch.save(rec_ckpt, rec_best)
+                    # torch.save(supp_ckpt, supp_best)
+                    # torch.save(rec_ckpt, rec_best)
                 if (epoch > 0) and (opt.save_period > 0) and (epoch % opt.save_period == 0):
-                    torch.save(ckpt, w / f'obj_epoch{epoch}.pt')
-                    torch.save(supp_ckpt, w / f'supp_epoch{epoch}.pt')
-                    torch.save(rec_ckpt, w / f'rec_epoch{epoch}.pt')
-                del ckpt, supp_ckpt, rec_ckpt
+                    torch.save(ckpt, w / f'epoch{epoch}.pt')
+                    # torch.save(supp_ckpt, w / f'supp_epoch{epoch}.pt')
+                    # torch.save(rec_ckpt, w / f'rec_epoch{epoch}.pt')
+                # del ckpt, supp_ckpt, rec_ckpt
+                del ckpt
                 callbacks.run('on_model_save', last, epoch, final_epoch, best_fitness, fi)
 
             # Stop Single-GPU
@@ -605,13 +638,19 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 strip_optimizer(f)  # strip optimizers
                 if f is best:
 
-                    best_autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
-                    ckpt = torch.load(supp_best)
-                    best_autoencoder.load_state_dict(ckpt['model'])
+                    # best_autoencoder = AutoEncoder(autoenc_chs).to(device)
+                    # ckpt = torch.load(supp_best)
+                    # best_autoencoder.load_state_dict(ckpt['model'])
 
-                    best_rec_model = Decoder_Rec(opt.autoenc_chs, cout=3).to(device)
-                    rec_ckpt = torch.load(rec_best, map_location=device)
-                    best_rec_model.load_state_dict(rec_ckpt['model'])
+                    # best_rec_model = Decoder_Rec(cin=make_divisible((model.yaml['backbone'][model.cutting_layer][3][0]) * model.yaml['width_multiple'], 8), cout=3, autoenc_chs=autoenc_chs).to(device)
+                    # rec_ckpt = torch.load(rec_best, map_location=device)
+                    # best_rec_model.load_state_dict(rec_ckpt['model'])
+
+                    ckpt = torch.load(f, map_location=device)
+                    best_autoencoder = AutoEncoder(autoenc_chs).to(device)
+                    best_autoencoder.load_state_dict(ckpt['autoencoder'].state_dict())
+                    best_rec_model = Decoder_Rec(cin=ckpt['rec_model'].cin, cout=ckpt['rec_model'].cout, autoenc_chs=autoenc_chs).to(device)
+                    best_rec_model.load_state_dict(ckpt['rec_model'].state_dict())
 
                     LOGGER.info(f'\nValidating {f}...')
                     results, _, _ = val.run(data_dict,
@@ -630,7 +669,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                             # compressibility_loss = compressibility_loss,
                                             compute_rec_loss=compute_rec_loss,
                                             autoencoder=best_autoencoder.half(),
-                                            rec_model=deepcopy(best_rec_model).half())
+                                            rec_model=best_rec_model.half())
                     # if is_coco:
                         # callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
                     log_vals = list(mloss[-3:]) + list(results)[-3:]
@@ -688,12 +727,13 @@ def parse_opt(known=False):
     parser.add_argument('--artifact_alias', type=str, default='latest', help='W&B: Version of dataset artifact to use')
 
     # Supplemental arguments
-    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
-    parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
-    parser.add_argument('--rec-weights', type=str, default=None, help='initial weights path for the reconstructor')
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[], help='number of channels in autoencoder')
+    # parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
+    # parser.add_argument('--rec-weights', type=str, default=None, help='initial weights path for the reconstructor')
     parser.add_argument('--train-yolo', type=str, default='all', help='which part of the yolo gets trained: backend, all, nothing')
     parser.add_argument('--freeze-autoenc', action='store_true', help='determins autoencoder weights to be freezed')
     parser.add_argument('--rec-only', action='store_true', help='only train the reconstruction netweork')
+    parser.add_argument('--cut-layer', type=int, default=-1, help='the index of the cutting layer (AFTER this layer, the model will be split)')
 
     # Some of the hyperparameters
     parser.add_argument('--lr0', type=float, default=0.01, help='initial learning rate')

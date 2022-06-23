@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+from enum import auto
 import logging
 import math
 import os
@@ -64,17 +65,15 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
           device,
           callbacks
           ):
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, supp_weights, train_yolo, freeze_autoenc= \
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, train_yolo, freeze_autoenc, cutting_layer, autoenc_chs= \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
-        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.supp_weights, opt.train_yolo, opt.freeze_autoenc
+        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.train_yolo, opt.freeze_autoenc, opt.cut_layer, opt.autoenc_chs
 
     # Directories
     w = save_dir / 'weights'  # weights dir
     (w.parent if evolve else w).mkdir(parents=True, exist_ok=True)  # make dir
     last, best = w / 'last.pt', w / 'best.pt'
-    supp_last, supp_best = w / 'supp_last.pt', w / 'supp_best.pt'
-
-    print_args_to_file(opt, save_dir / 'result.txt')
+    # supp_last, supp_best = w / 'supp_last.pt', w / 'supp_best.pt'
 
     # Hyperparameters
     if isinstance(hyp, str):
@@ -86,11 +85,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     hyp['weight_decay'] = opt.weight_decay
     LOGGER.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
 
-    # Save run settings
-    with open(save_dir / 'hyp.yaml', 'w') as f:
-        yaml.safe_dump(hyp, f, sort_keys=False)
-    with open(save_dir / 'opt.yaml', 'w') as f:
-        yaml.safe_dump(vars(opt), f, sort_keys=False)
     data_dict = None
 
     # Loggers
@@ -124,24 +118,45 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = Model(cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        cutting_layer = getattr(ckpt['model'], 'cutting_layer', False) or opt.cut_layer
+        model = Model(cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors'), cutting_layer=cutting_layer).to(device)  # create
         exclude = ['anchor'] if (cfg or hyp.get('anchors')) and not resume else []  # exclude keys
         csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f'Transferred {len(csd)}/{len(model.state_dict())} items from {weights}')  # report
-    else:
-        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
-    autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
-    
-    autoenc_pretrained = False
-    if supp_weights is not None:
-        autoenc_pretrained = supp_weights.endswith('.pt')
-        if autoenc_pretrained:
-            supp_ckpt = torch.load(supp_weights, map_location=device)
-            autoencoder.load_state_dict(supp_ckpt['model'])
+        # ---- Autoencoder -----#
+        if 'autoencoder' in ckpt:
+            autoenc_chs = ckpt['autoencoder'].chs
+            autoencoder = AutoEncoder(autoenc_chs).to(device)
+            autoencoder.load_state_dict(ckpt['autoencoder'].float().state_dict())
+            # autoencoder = ckpt['autoencoder'].float()
+            # autoenc_chs = autoencoder.chs
             print('pretrained autoencoder')
-            del supp_ckpt
+        else:
+            autoencoder = AutoEncoder(autoenc_chs).to(device)
+    else:
+        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors'), cutting_layer=cutting_layer).to(device)  # create
+        autoencoder = AutoEncoder(autoenc_chs).to(device)
+    LOGGER.info(f'autoencoder channels: {autoenc_chs}')
+    
+    # autoenc_pretrained = False
+    # if supp_weights is not None:
+    #     autoenc_pretrained = supp_weights.endswith('.pt')
+    #     if autoenc_pretrained:
+    #         supp_ckpt = torch.load(supp_weights, map_location=device)
+    #         autoencoder.load_state_dict(supp_ckpt['model'])
+    #         print('pretrained autoencoder')
+    #         del supp_ckpt
+
+    # Save run settings
+    opt.autoenc_chs = autoenc_chs
+    opt.cut_layer = cutting_layer
+    with open(save_dir / 'hyp.yaml', 'w') as f:
+        yaml.safe_dump(hyp, f, sort_keys=False)
+    with open(save_dir / 'opt.yaml', 'w') as f:
+        yaml.safe_dump(vars(opt), f, sort_keys=False)
+    print_args_to_file(opt, save_dir / 'result.txt')
 
     if freeze_autoenc:
         for param in autoencoder.parameters():
@@ -278,7 +293,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if not opt.noautoanchor:
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
             model.half().float()  # pre-reduce anchor precision
-            autoencoder.half().float()
+            # autoencoder.half().float()
 
         callbacks.run('on_pretrain_routine_end')
 
@@ -317,6 +332,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 f'Starting training for {epochs} epochs...')
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
+        autoencoder.train()
         for k, m in model.named_modules():
             if any(x == k for x in freeze):
                 m.eval()
@@ -434,18 +450,20 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                         'updates': ema.updates,
                         'optimizer': optimizer.state_dict(),
                         'wandb_id': loggers.wandb.wandb_run.id if loggers.wandb else None,
-                        'date': datetime.now().isoformat()}
-                supp_ckpt = {'model': deepcopy(de_parallel(autoencoder)).half().state_dict()}
+                        'date': datetime.now().isoformat(),
+                        'autoencoder': deepcopy(de_parallel(autoencoder)).half()}
+                # supp_ckpt = {'model': deepcopy(de_parallel(autoencoder)).half().state_dict()}
 
                 # Save last, best and delete
                 torch.save(ckpt, last)
-                torch.save(supp_ckpt, supp_last)
+                # torch.save(supp_ckpt, supp_last)
                 if best_fitness == fi:
                     torch.save(ckpt, best)
-                    torch.save(supp_ckpt, supp_best)
+                    # torch.save(supp_ckpt, supp_best)
                 if (epoch > 0) and (opt.save_period > 0) and (epoch % opt.save_period == 0):
                     torch.save(ckpt, w / f'epoch{epoch}.pt')
-                del ckpt, supp_ckpt
+                # del ckpt, supp_ckpt
+                del ckpt
                 callbacks.run('on_model_save', last, epoch, final_epoch, best_fitness, fi)
 
             # Stop Single-GPU
@@ -463,9 +481,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 strip_optimizer(f)  # strip optimizers
                 if f is best:
 
-                    best_autoencoder = AutoEncoder(opt.autoenc_chs).to(device)
-                    ckpt = torch.load(supp_best)
-                    best_autoencoder.load_state_dict(ckpt['model'])
+                    best_autoencoder = AutoEncoder(autoenc_chs).to(device)
+                    ckpt = torch.load(f)
+                    best_autoencoder.load_state_dict(ckpt['autoencoder'].state_dict())
 
                     LOGGER.info(f'\nValidating {f}...')
                     results, _, _ = val.run(data_dict,
@@ -535,10 +553,11 @@ def parse_opt(known=False):
     parser.add_argument('--artifact_alias', type=str, default='latest', help='W&B: Version of dataset artifact to use')
 
     # Supplemental arguments
-    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
-    parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
+    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[], help='number of channels in autoencoder')
+    # parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--train-yolo', type=str, default='all', help='which part of the yolo gets trained: backend, all, nothing')
     parser.add_argument('--freeze-autoenc', action='store_true', help='determins autoencoder weights to be freezed')
+    parser.add_argument('--cut-layer', type=int, default=-1, help='the index of the cutting layer (AFTER this layer, the model will be split)')
 
     # Some of the hyperparameters
     parser.add_argument('--lr0', type=float, default=0.01, help='initial learning rate')

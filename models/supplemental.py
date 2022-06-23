@@ -59,9 +59,12 @@ class Conv_Inv(nn.Module):
         return self.act(self.bn(self.deconv(x)))
 
 class Decoder_Rec(nn.Module):
-    def __init__(self, autoenc_chs, cout, e=0.5):
+    def __init__(self, cin, cout, autoenc_chs, e=0.5):
         super().__init__()
-        cin = autoenc_chs[0]
+        self.autoenc_chs = autoenc_chs
+        self.cin = cin
+        self.cout = cout
+        self.e = e
         c1 = int(cin * e)
         c2 = int(c1 * e)
         layers = [
@@ -91,30 +94,28 @@ class Decoder_Rec(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, chs, k=1, s=1, p=None):
         super().__init__()
-        self.conv1 = nn.Conv2d(chs[0], chs[1], k, s, autopad(k, p), bias=False)
-        self.act1 = nn.SiLU()
-        self.conv2 = nn.Conv2d(chs[1], chs[2], k, s, autopad(k, p), bias=False)
-        # self.act2 = nn.Sigmoid()
-        # self.act2 = nn.SiLU()
-        
+        layers = [nn.Identity()]
+        for i in range(len(chs)-1):
+            layers.append(nn.Conv2d(chs[i], chs[i+1], k, s, autopad(k, p), bias=False))
+            if i < len(chs) - 2:
+                layers.append(nn.SiLU())
+        self.net = nn.Sequential(*(layers))
 
     def forward(self, x):
-        return self.conv2(self.act1(self.conv1(x)))
-        # return self.act2(self.conv2(self.act1(self.conv1(x))))
-        # return self.act1(self.conv1(x))
+        return self.net(x)
 
 
 class Decoder(nn.Module):
     def __init__(self, chs, k=1, s=1, p=None):
         super().__init__()
-        self.conv1 = nn.Conv2d(chs[2], chs[1], k, s, autopad(k, p), bias=False)
-        self.act1 = nn.SiLU()
-        self.conv2 = nn.Conv2d(chs[1], chs[0], k, s, autopad(k, p), bias=False)
-        self.act2 = nn.SiLU()
+        layers = [nn.Identity()]
+        for i in range(len(chs)-1, 0, -1):
+            layers.append(nn.Conv2d(chs[i], chs[i-1], k, s, autopad(k, p), bias=False))
+            layers.append(nn.SiLU())
+        self.net = nn.Sequential(*(layers))
 
     def forward(self, x):
-        return self.act2(self.conv2(self.act1(self.conv1(x))))
-        # return self.act2(self.conv2(x))
+        return self.net(x)
 
 
 class AutoEncoder(nn.Module):
@@ -122,6 +123,7 @@ class AutoEncoder(nn.Module):
     def __init__(self, chs):
         super().__init__()
         # print(chs)
+        self.chs = chs
         self.enc = Encoder(chs, k=3)
         self.dec = Decoder(chs, k=3)
 

@@ -108,11 +108,12 @@ def run(data,
         uniform_len=1,
         arbitrary_dist=None,
         autoenc_chs=None,
-        supp_weights=None,  # model.pt path(s)
+        # supp_weights=None,  # model.pt path(s)
         track_stats=False,
         dist_range=[-10,14],
         bins=10000,
         data_suffix='',
+        cut_layer=-1,
         model=None,
         dataloader=None,
         save_dir=Path(''),
@@ -141,8 +142,20 @@ def run(data,
         # Load model
         check_suffix(weights, '.pt')
         model = attempt_load(weights, map_location=device)  # load FP32 model
+        model.cutting_layer = model.cutting_layer if hasattr(model, 'cutting_layer') else cut_layer
         gs = max(int(model.stride.max()), 32)  # grid size (max stride)
         imgsz = check_img_size(imgsz, s=gs)  # check image size
+
+        # Loading Autoencoder
+        ckpt = torch.load(weights[0], map_location=device)  # load checkpoint
+        # ---- Autoencoder -----#
+        if 'autoencoder' in ckpt:
+            autoenc_chs = ckpt['autoencoder'].chs
+            autoencoder = AutoEncoder(autoenc_chs).to(device)
+            autoencoder.load_state_dict(ckpt['autoencoder'].state_dict())
+            autoencoder.half() if half else autoencoder.float()
+            autoencoder.eval()
+            print('pretrained autoencoder')
 
         # Data
         data = check_dataset(data, suffix=data_suffix)  # check
@@ -151,17 +164,17 @@ def run(data,
     half &= device.type != 'cpu'  # half precision only supported on CUDA
     model.half() if half else model.float()
 
-    # Loading Autoencoder
-    if supp_weights is not None:
-        autoenc_pretrained = supp_weights.endswith('.pt')
-        if autoenc_pretrained:
-            autoencoder = AutoEncoder(autoenc_chs).to(device)
-            supp_ckpt = torch.load(supp_weights, map_location=device)
-            autoencoder.load_state_dict(supp_ckpt['model'])
-            print('pretrained autoencoder')
-            del supp_ckpt
-            autoencoder.half() if half else autoencoder.float()
-            autoencoder.eval()
+   
+    # if supp_weights is not None:
+    #     autoenc_pretrained = supp_weights.endswith('.pt')
+    #     if autoenc_pretrained:
+    #         autoencoder = AutoEncoder(autoenc_chs).to(device)
+    #         supp_ckpt = torch.load(supp_weights, map_location=device)
+    #         autoencoder.load_state_dict(supp_ckpt['model'])
+    #         print('pretrained autoencoder')
+    #         del supp_ckpt
+    #         autoencoder.half() if half else autoencoder.float()
+    #         autoencoder.eval()
     if rec_model is not None:
         rec_model.eval()
     if autoencoder is not None:
@@ -424,12 +437,13 @@ def parse_opt():
     parser.add_argument('--arbitrary-dist', default=None, help='the numpy file containing the distribution')
 
     # Supplemental arguments
-    parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[320, 192, 64], help='number of channels in autoencoder')
-    parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
+    # parser.add_argument('--autoenc-chs',  type=int, nargs='*', default=[], help='number of channels in autoencoder')
+    # parser.add_argument('--supp-weights', type=str, default=None, help='initial weights path for the autoencoder')
     parser.add_argument('--track-stats', action='store_true', help='track the statistical properties of the residuals')
     parser.add_argument('--dist-range',  type=float, nargs='*', default=[-3,3], help='the range of the distribution')
     parser.add_argument('--bins', type=int, default=1000, help='number of bins in histogram')
     parser.add_argument('--data-suffix', type=str, default='', help='data path suffix')
+    parser.add_argument('--cut-layer', type=int, default=-1, help='the index of the cutting layer (AFTER this layer, the model will be split)')
 
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML

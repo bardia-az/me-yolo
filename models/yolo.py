@@ -87,7 +87,7 @@ class Detect(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None, me=False):  # model, input channels, number of classes
+    def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None, me=False, cutting_layer=-1):  # model, input channels, number of classes
         super().__init__()
         if isinstance(cfg, dict):
             self.yaml = cfg  # model dict
@@ -98,6 +98,8 @@ class Model(nn.Module):
                 self.yaml = yaml.safe_load(f)  # model dict
 
         # Define model
+        # self.yaml['cut_layer'] = self.yaml['cut_layer'] if 'cut_layer' in self.yaml else cutting_layer
+        self.cutting_layer = cutting_layer
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
         if nc and nc != self.yaml['nc']:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
@@ -148,9 +150,8 @@ class Model(nn.Module):
 
     def _forward_once(self, x, profile=False, visualize=False, cut_model=0, T=None):    #cut_model => 0 if no cut, 1 if first half, 2 if second half #T is the intermediate tensor
         y, dt = [], []  # outputs
-        cutting_layer = 4
         for m in self.model:
-            if(cut_model==2 and m.i<cutting_layer):    # second half of the model
+            if(cut_model==2 and m.i<self.cutting_layer):    # second half of the model
                 y.append(None)
                 continue
             # print('forward called')
@@ -160,7 +161,7 @@ class Model(nn.Module):
             if profile:
                 self._profile_one_layer(m, x, dt)
 
-            if(cut_model==2 and m.i==cutting_layer):    # second half of the model
+            if(cut_model==2 and m.i==self.cutting_layer):    # second half of the model
                 # print(f'in forward {T.size()}')
                 x = T
             else:
@@ -175,7 +176,7 @@ class Model(nn.Module):
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize, cut_model=cut_model)
 
-            if(cut_model==1 and m.i==cutting_layer):    # first half of the model
+            if(cut_model==1 and m.i==self.cutting_layer):    # first half of the model
                 return x
 
         return x
