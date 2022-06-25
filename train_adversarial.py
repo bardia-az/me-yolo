@@ -582,7 +582,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             # Update best mAP
             rec_fitness = rec_val_loss_items.numpy()[2] if opt.rec_only else -rec_val_loss_items.numpy()[2]
             fi = fitness_adv(np.array(results).reshape(1, -1), rec_fitness)  # weighted combination of [P, R, mAP@.5, mAP@.5-.95, psnr]
-            if fi > best_fitness:
+            if fi > best_fitness and epoch > 10:
                 best_fitness = fi
                 best_epoch = epoch
             log_vals = list(mloss[:-3]) + list(results)[:-3] + lr
