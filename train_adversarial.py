@@ -140,7 +140,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         else:
             autoencoder = AutoEncoder(autoenc_chs).to(device)
         # ---- Reconstruction Model -----#
-        if 'rec_model' in ckpt:
+        if 'rec_model' in ckpt and not opt.rec_only:
             rec_model = Decoder_Rec(cin=ckpt['rec_model'].cin, cout=ckpt['rec_model'].cout, autoenc_chs=autoenc_chs).to(device)
             rec_model.load_state_dict(ckpt['rec_model'].float().state_dict())
             print('pretrained reconstruction model')
