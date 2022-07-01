@@ -356,7 +356,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     stopper = EarlyStopping(patience=opt.patience)
     compute_loss = ComputeLoss(model)  # init loss class
     compute_rec_loss = ComputeRecLoss(MAX=1.0, w_grad=opt.w_grad)  # init loss class
-    mloss = torch.zeros(7, device=device)  # mean losses
+    mloss = torch.zeros(8, device=device)  # mean losses
     if data.endswith('coco.yaml'):
         # sample_image = '000000000885.jpg'
         sample_image = '000000011615.jpg'
