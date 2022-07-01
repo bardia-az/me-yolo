@@ -203,7 +203,7 @@ def run(data,
     s = ('%20s' + '%11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     dt, p, r, f1, mp, mr, map50, map = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     loss = torch.zeros(3, device=device)
-    loss_rec = torch.zeros(3, device=device)
+    loss_rec = torch.zeros(4, device=device)
     loss_r = torch.zeros(1, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
     L1, L2, SATD = [], [], []

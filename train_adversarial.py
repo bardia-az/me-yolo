@@ -355,10 +355,11 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     scaler = amp.GradScaler(enabled=cuda)
     stopper = EarlyStopping(patience=opt.patience)
     compute_loss = ComputeLoss(model)  # init loss class
-    compute_rec_loss = ComputeRecLoss(MAX=1.0)  # init loss class
+    compute_rec_loss = ComputeRecLoss(MAX=1.0, w_grad=opt.w_grad)  # init loss class
     mloss = torch.zeros(7, device=device)  # mean losses
     if data.endswith('coco.yaml'):
-        sample_image = '000000000885.jpg'
+        # sample_image = '000000000885.jpg'
+        sample_image = '000000011615.jpg'
     elif data.endswith('coco128.yaml'):
         sample_image = '000000000241.jpg'
     else:
@@ -384,12 +385,12 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
                 dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
 
-            mloss = torch.zeros(7, device=device)  # mean losses
+            mloss = torch.zeros(8, device=device)  # mean losses
             if RANK != -1:
                 train_loader.sampler.set_epoch(epoch)
             pbar = enumerate(train_loader)
             LOGGER.info('\ntraining the object detection network ...')
-            LOGGER.info(('%10s' * 11) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'cmprss', 'mae', 'mse', 'psnr', 'labels', 'img_size'))
+            LOGGER.info(('%10s' * 12) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'cmprss', 'mae', 'mse', 'psnr', 'grad', 'labels', 'img_size'))
             if RANK in [-1, 0]:
                 pbar = tqdm(pbar, total=nb)  # progress bar
             optimizer.zero_grad()
@@ -450,7 +451,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 if RANK in [-1, 0]:
                     mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                     mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                    pbar.set_description(('%10s' * 2 + '%10.4g' * 9) % (
+                    pbar.set_description(('%10s' * 2 + '%10.4g' * 10) % (
                         f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
                     callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
                 # end batch ------------------------------------------------------------------------------------------------
@@ -478,7 +479,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                             autoencoder=deepcopy(autoencoder).half(),
                                             rec_model=deepcopy(rec_model).half())
 
-                log_vals = list(mloss[-3:]) + list(results)[-3:]
+                log_vals = list(mloss[-4:]) + list(results)[-4:]
                 callbacks.run('on_fit_epoch_end_adversary', log_vals, epoch)
             # end epoch of training the object detection model -------------------------------------------------------------
 
@@ -486,12 +487,12 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         model.eval()
         autoencoder.eval()
         rec_model.train()
-        rec_mloss = torch.zeros(3, device=device)  # mean losses
+        rec_mloss = torch.zeros(4, device=device)  # mean losses
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
         LOGGER.info('\ntraining the reconstruction network ...')
-        LOGGER.info(('%10s' * 6) % ('Epoch', 'gpu_mem', 'mae', 'mse', 'psnr', 'img_size'))
+        LOGGER.info(('%10s' * 7) % ('Epoch', 'gpu_mem', 'mae', 'mse', 'psnr', 'grad', 'img_size'))
         if RANK in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         rec_optimizer.zero_grad()
@@ -534,7 +535,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if RANK in [-1, 0]:
                 rec_mloss = (rec_mloss * i + rec_loss_items) / (i + 1)  # update mean losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%10s' * 2 + '%10.4g' * 3 + '%10s') % (
+                pbar.set_description(('%10s' * 2 + '%10.4g' * 4 + '%10s') % (
                     f'{epoch}/{epochs - 1}', mem, *rec_mloss, f'{imgs.shape[-2]}x{imgs.shape[-1]}'))
             # end batch ------------------------------------------------------------------------------------------------
         # ------- validation -------- #
@@ -546,8 +547,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             rec_model.eval()
             final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
             with torch.no_grad():
-                s = (('%20s' + '%11s' * 2) % ('mae', 'mse', 'psnr'))
-                rec_val_loss_items = torch.zeros(3, device=device)
+                s = (('%20s' + '%11s' * 3) % ('mae', 'mse', 'psnr', 'grad'))
+                rec_val_loss_items = torch.zeros(4, device=device)
                 rec_picture = rec_dir / Path(f'{epoch:03}.jpeg')
                 pic_found = False
                 for batch_i, (img, targets, paths, _) in enumerate(tqdm(val_loader, desc=s)):
@@ -565,7 +566,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                 pic_found = True
                                 break
                 rec_val_loss_items = rec_val_loss_items.cpu() / len(val_loader)
-                pf = '%20.3g' + '%11.3g' * 2 # print format
+                pf = '%20.3g' + '%11.3g' * 3 # print format
                 LOGGER.info(pf % (*rec_val_loss_items,))
                 log_vals = list(rec_mloss) + list(rec_val_loss_items)
                 callbacks.run('on_train_epoch_end_adversary', log_vals, epoch, rec_picture)
@@ -585,7 +586,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if fi > best_fitness and epoch > 10:
                 best_fitness = fi
                 best_epoch = epoch
-            log_vals = list(mloss[:-3]) + list(results)[:-3] + lr
+            log_vals = list(mloss[:-4]) + list(results)[:-4] + lr
             callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
 
             # Save model
@@ -623,7 +624,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             if RANK == -1 and stopper(epoch=epoch, fitness=fi):
                 break
 
-    LOGGER.info(f'\nThe best fitness is {best_fitness[0]:.3f} associated with epoch {best_epoch}')    
+    LOGGER.info(f'\nThe best fitness is {best_fitness[0]:.4g} associated with epoch {best_epoch}')    
     # end training -----------------------------------------------------------------------------------------------------
 
     
@@ -742,6 +743,7 @@ def parse_opt(known=False):
     parser.add_argument('--weight-decay', type=float, default=0.0005, help='optimizer weight decay 5e-4')
     parser.add_argument('--w-compress', type=float, default=0, help='The weight of the compressibility loss')
     parser.add_argument('--w-rec', type=float, default=1, help='The weight of the reconstruction loss')
+    parser.add_argument('--w-grad', type=float, default=1, help='The weight of the image gradient loss in reconstruction loss')
     
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()

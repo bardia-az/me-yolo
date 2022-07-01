@@ -51,7 +51,7 @@ class Loggers():
                                'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',  # metrics
                                'val/box_loss', 'val/obj_loss', 'val/cls_loss', 'val/loss_o', 'val/fid_loss(mse)', 'val/bpp_loss', 'val/enc_loss', 'val/aux_loss', 'val/loss',  # val loss
                                'x/lr']  # params
-        self.keys_rec = ['train/mae', 'train/mse', 'train/psnr', 'val/mae', 'val/mse', 'val/psnr']
+        self.keys_rec = ['train/mae', 'train/mse', 'train/psnr', 'train/grad', 'val/mae', 'val/mse', 'val/psnr', 'val/grad']
         for k in LOGGERS:
             setattr(self, k, None)  # init empty logger dictionary
         self.csv = True  # always log to csv
