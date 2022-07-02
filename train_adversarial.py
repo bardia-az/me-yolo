@@ -245,9 +245,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     del g0, g1, g2
 
     if opt.adam:
-        rec_optimizer = Adam(rec_model.parameters(), lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))
+        rec_optimizer = Adam(rec_model.parameters(), lr=hyp['lr0'], betas=(hyp['momentum'], 0.999), weight_decay=hyp['weight_decay'])
     else:
-        rec_optimizer = SGD(rec_model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
+        rec_optimizer = SGD(rec_model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True, weight_decay=hyp['weight_decay'])
 
     # Scheduler
     if opt.linear_lr:
@@ -395,10 +395,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 pbar = tqdm(pbar, total=nb)  # progress bar
             optimizer.zero_grad()
             rec_optimizer.zero_grad()
-            max_grad_autoencoder = float('-inf')
-            min_grad_autoencoder = float('inf')
-            max_grad_rec = float('-inf')
-            min_grad_rec = float('inf')
             for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
                 ni = i + nb * epoch  # number integrated batches (since train start)
                 imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
@@ -444,14 +440,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 scaler.scale(loss).backward()
 
                 if opt.clip_grad > 0:
+                    torch.nn.utils.clip_grad_value_(autoencoder.parameters(), opt.clip_grad*10)
                     torch.nn.utils.clip_grad_norm_(autoencoder.parameters(), opt.clip_grad)
-
-                for param in autoencoder.parameters():
-                    max_grad_autoencoder = max(max_grad_autoencoder, torch.max(param.grad).item())
-                    min_grad_autoencoder = min(min_grad_autoencoder, torch.min(param.grad).item())
-                for param in rec_model.parameters():
-                    max_grad_rec = max(max_grad_rec, torch.max(param.grad).item())
-                    min_grad_rec = min(min_grad_rec, torch.min(param.grad).item())
 
                 # Optimize
                 if ni - last_opt_step_obj >= accumulate:
@@ -471,7 +461,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                         f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
                     callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
                 # end batch ------------------------------------------------------------------------------------------------
-            print(max_grad_autoencoder, min_grad_autoencoder, max_grad_rec, min_grad_rec)
             # ------- validation -------- #
             if RANK in [-1, 0]:
                 del T, T_bottleneck, T_hat, imgs, pred, rec_imgs, 
@@ -514,10 +503,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             pbar = tqdm(pbar, total=nb)  # progress bar
         rec_optimizer.zero_grad()
         optimizer.zero_grad()
-        max_grad_autoencoder = float('-inf')
-        min_grad_autoencoder = float('inf')
-        max_grad_rec = float('-inf')
-        min_grad_rec = float('inf')
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
@@ -547,14 +532,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             scaler.scale(rec_loss).backward()
 
             if opt.clip_grad > 0:
+                torch.nn.utils.clip_grad_value_(autoencoder.parameters(), opt.clip_grad*10)
                 torch.nn.utils.clip_grad_norm_(rec_model.parameters(), opt.clip_grad)
-
-            for param in autoencoder.parameters():
-                max_grad_autoencoder = max(max_grad_autoencoder, torch.max(param.grad).item())
-                min_grad_autoencoder = min(min_grad_autoencoder, torch.min(param.grad).item())
-            for param in rec_model.parameters():
-                max_grad_rec = max(max_grad_rec, torch.max(param.grad).item())
-                min_grad_rec = min(min_grad_rec, torch.min(param.grad).item())
 
             # Optimize
             if ni - last_opt_step >= accumulate:
@@ -570,7 +549,6 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 pbar.set_description(('%10s' * 2 + '%10.4g' * 4 + '%10s') % (
                     f'{epoch}/{epochs - 1}', mem, *rec_mloss, f'{imgs.shape[-2]}x{imgs.shape[-1]}'))
             # end batch ------------------------------------------------------------------------------------------------
-        print(max_grad_autoencoder, min_grad_autoencoder, max_grad_rec, min_grad_rec)
         # ------- validation -------- #
         if RANK in [-1, 0]:
             del T, T_bottleneck, imgs, rec_imgs
