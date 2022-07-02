@@ -443,6 +443,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 # Backward
                 scaler.scale(loss).backward()
 
+                if opt.clip_grad > 0:
+                    torch.nn.utils.clip_grad_norm_(autoencoder.parameters(), opt.clip_grad)
+
                 for param in autoencoder.parameters():
                     max_grad_autoencoder = max(max_grad_autoencoder, torch.max(param.grad).item())
                     min_grad_autoencoder = min(min_grad_autoencoder, torch.min(param.grad).item())
@@ -542,6 +545,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
             # Backward
             scaler.scale(rec_loss).backward()
+
+            if opt.clip_grad > 0:
+                torch.nn.utils.clip_grad_norm_(rec_model.parameters(), opt.clip_grad)
 
             for param in autoencoder.parameters():
                 max_grad_autoencoder = max(max_grad_autoencoder, torch.max(param.grad).item())
@@ -771,6 +777,7 @@ def parse_opt(known=False):
     parser.add_argument('--w-compress', type=float, default=0, help='The weight of the compressibility loss')
     parser.add_argument('--w-rec', type=float, default=1, help='The weight of the reconstruction loss')
     parser.add_argument('--w-grad', type=float, default=1, help='The weight of the image gradient loss in reconstruction loss')
+    parser.add_argument('--clip-grad', type=float, default=-1, help='The max norm of the clipped gradient')
     
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()
