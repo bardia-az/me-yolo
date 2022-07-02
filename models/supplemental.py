@@ -91,11 +91,25 @@ class Decoder_Rec(nn.Module):
         # C3([192, 192, 4])
 
 ################## Auto Encoder ######################
+# class ResBlock(nn.Module):
+#     def __init__(self, ch, k=3, p=None):
+#         super().__init__()
+#         self.Conv1 = nn.Conv2d(ch, ch, k, s=1, padding=autopad(k, p))
+#         self.Conv2 = nn.Conv2d(ch, ch, k, s=1, padding=autopad(k, p))
+#         self.act = nn.SiLU()
+
+#     def forward(self, x):
+#         y = x
+#         return (x + self.Conv2(self.act(self.Conv1(y))))
+
 class Encoder(nn.Module):
     def __init__(self, chs, k=1, s=1, p=None):
         super().__init__()
         layers = [nn.Identity()]
         for i in range(len(chs)-1):
+            if i == len(chs) - 2:
+                layers.append(ResBlock(chs[i], k, act=nn.SiLU()))
+                nn.BatchNorm2d(chs[i])
             layers.append(nn.Conv2d(chs[i], chs[i+1], k, s, autopad(k, p), bias=False))
             if i < len(chs) - 2:
                 layers.append(nn.SiLU())
@@ -110,6 +124,9 @@ class Decoder(nn.Module):
         super().__init__()
         layers = [nn.Identity()]
         for i in range(len(chs)-1, 0, -1):
+            if i == 1:
+                layers.append(ResBlock(chs[i], k, act=nn.SiLU()))
+                nn.BatchNorm2d(chs[i])
             layers.append(nn.Conv2d(chs[i], chs[i-1], k, s, autopad(k, p), bias=False))
             layers.append(nn.SiLU())
         self.net = nn.Sequential(*(layers))

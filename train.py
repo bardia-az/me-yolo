@@ -320,7 +320,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     nw = round(hyp['warmup_epochs'] * nb)  # number of warmup iterations, max(3 epochs, 1k iterations)
     last_opt_step = -1
     maps = np.zeros(nc)  # mAP per class
-    results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
+    results = (0, 0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls), cmprss_loss
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
     stopper = EarlyStopping(patience=opt.patience)
@@ -438,7 +438,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
                 best_fitness = fi
-            log_vals = list(mloss) + list(results)[:-3] + lr
+            log_vals = list(mloss) + list(results)[:8] + lr
             callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
 
             # Save model
@@ -502,7 +502,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                             compressibility_loss = compressibility_loss,
                                             autoencoder=best_autoencoder.half())
                     if is_coco:
-                        callbacks.run('on_fit_epoch_end', list(mloss) + list(results)[:-3] + lr, epoch, best_fitness, fi)
+                        callbacks.run('on_fit_epoch_end', list(mloss) + list(results)[:8] + lr, epoch, best_fitness, fi)
 
         callbacks.run('on_train_end', last, best, plots, epoch, results)
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}")
