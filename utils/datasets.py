@@ -167,7 +167,7 @@ class LoadImagesForME(Dataset):
     
 
 def create_dataloader(path, imgsz, batch_size, stride, single_cls=False, hyp=None, augment=False, cache=False, pad=0.0,
-                      rect=False, rect_img=False, rank=-1, workers=8, image_weights=False, quad=False, prefix=''):
+                      rect=False, rect_img=False, store_img=False, rank=-1, workers=8, image_weights=False, quad=False, prefix=''):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
@@ -175,6 +175,7 @@ def create_dataloader(path, imgsz, batch_size, stride, single_cls=False, hyp=Non
                                       hyp=hyp,  # augmentation hyperparameters
                                       rect=rect,  # rectangular training
                                       rect_img=rect_img,
+                                      store_img=store_img,
                                       cache_images=cache,
                                       single_cls=single_cls,
                                       stride=int(stride),
@@ -508,7 +509,7 @@ class LoadImagesAndLabels(Dataset):
     cache_version = 0.6  # dataset labels *.cache version
 
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, rect_img=False, image_weights=False,
-                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix=''):
+                 store_img=False, cache_images=False, single_cls=False, stride=32, pad=0.0, prefix=''):
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -519,6 +520,7 @@ class LoadImagesAndLabels(Dataset):
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.path = path
+        self.store_img = store_img
         self.albumentations = Albumentations() if augment else None
 
         try:
@@ -746,6 +748,10 @@ class LoadImagesAndLabels(Dataset):
         if nl:
             labels_out[:, 1:] = torch.from_numpy(labels)
 
+        # Store the image
+        if self.store_img:
+            cv2.imwrite('../vvc/image.png', img)
+        
         # Convert
         img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         img = np.ascontiguousarray(img)
