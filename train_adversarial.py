@@ -684,10 +684,10 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                             rec_model=best_rec_model.half())
                     # if is_coco:
                         # callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
-                    log_vals = list(mloss[-3:]) + list(results)[-3:]
+                    log_vals = list(mloss[-4:]) + list(results)[-4:]
                     rec_picture = rec_dir / Path(f'{best_epoch:03}.jpeg')
                     callbacks.run('on_train_epoch_end_adversary', log_vals, best_epoch, rec_picture)
-                    log_vals = list(mloss[:-3]) + list(results)[:-3] + lr
+                    log_vals = list(mloss[:-4]) + list(results)[:-4] + lr
                     callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
 
         callbacks.run('on_train_end', last, best, plots, epoch, results)
