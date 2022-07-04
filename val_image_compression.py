@@ -118,7 +118,7 @@ def tiled_to_tensor(tiled, ch_w, ch_h, tensors_min, tensors_max):
 
 def compress_tensors(tensors, tensors_w, tensors_h, qp):
     data = tensors.cpu().numpy().flatten().astype(np.uint8)
-    vvc_report = Path('../vvc/vvc_report.txt').open()
+    vvc_report = Path('../vvc/vvc_report.txt').open('w')
     VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_latent.cfg', '-i', '../vvc/tiled_img.yuv', '-b', '../vvc/bitstream.bin', 
                    '-o', '../vvc/reconst.yuv', '--SourceWidth', str(tensors_w), '--SourceHeight', str(tensors_h), '-f', '1', '-fr', '1', '-q', str(qp)]
     to_be_coded_file = '../vvc/tiled_img.yuv'
@@ -135,9 +135,9 @@ def compress_tensors(tensors, tensors_w, tensors_h, qp):
 def compress_input(img, qp, half=False):
     import cv2
     h, w = img.shape[-2:]
-    jpg2yuv_report = Path('../vvc/jpg2yuv_report.txt').open()
-    vvc_report = Path('../vvc/vvc_report.txt').open()
-    yuv2png_report = Path('../vvc/yuv2png_report.txt').open()
+    jpg2yuv_report = Path('../vvc/jpg2yuv_report.txt').open('w')
+    vvc_report = Path('../vvc/vvc_report.txt').open('w')
+    yuv2png_report = Path('../vvc/yuv2png_report.txt').open('w')
     jpg2yuv_command = ['ffmpeg', '-i', '../vvc/image.png', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-dst_range', '1', '../vvc/yuv_img.yuv', '-y']
     subprocess.call(jpg2yuv_command, stdout=jpg2yuv_report, stderr=subprocess.STDOUT)
     VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_444.cfg', '-i', '../vvc/yuv_img.yuv', '-b', '../vvc/bitstream.bin', 
