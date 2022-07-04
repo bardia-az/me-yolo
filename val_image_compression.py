@@ -118,31 +118,39 @@ def tiled_to_tensor(tiled, ch_w, ch_h, tensors_min, tensors_max):
 
 def compress_tensors(tensors, tensors_w, tensors_h, qp):
     data = tensors.cpu().numpy().flatten().astype(np.uint8)
+    vvc_report = Path('../vvc/vvc_report.txt').open()
     VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_latent.cfg', '-i', '../vvc/tiled_img.yuv', '-b', '../vvc/bitstream.bin', 
                    '-o', '../vvc/reconst.yuv', '--SourceWidth', str(tensors_w), '--SourceHeight', str(tensors_h), '-f', '1', '-fr', '1', '-q', str(qp)]
     to_be_coded_file = '../vvc/tiled_img.yuv'
     with open(to_be_coded_file, 'wb') as f:
         f.write(data)
-    subprocess.call(VVC_command, stdout='../vvc/vvc_report.txt')
+    subprocess.call(VVC_command, stdout=vvc_report)
+    vvc_report.close()
     bpp = os.path.getsize('../vvc/bitstream.bin') * 8 / (tensors_w*tensors_h)
     KB_num = os.path.getsize('../vvc/bitstream.bin') / 1024.0
     with open('../vvc/reconst.yuv', 'rb') as f:
         tmp_reconst = read_y_channel(f, tensors_w, tensors_h)
-    return torch.from_numpy(tmp_reconst).to(tensors.device, non_blocking=True), bpp, KB_num
+    return torch.from_numpy(tmp_reconst.copy()).to(tensors.device, non_blocking=True), bpp, KB_num
 
 def compress_input(img, qp, half=False):
     import cv2
     h, w = img.shape[-2:]
+    jpg2yuv_report = Path('../vvc/jpg2yuv_report.txt').open()
+    vvc_report = Path('../vvc/vvc_report.txt').open()
+    yuv2png_report = Path('../vvc/yuv2png_report.txt').open()
     jpg2yuv_command = ['ffmpeg', '-i', '../vvc/image.png', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-dst_range', '1', '../vvc/yuv_img.yuv', '-y']
-    subprocess.call(jpg2yuv_command, stdout='../vvc/jpg2yuv_report.txt')
+    subprocess.call(jpg2yuv_command, stdout=jpg2yuv_report, stderr=subprocess.STDOUT)
     VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_444.cfg', '-i', '../vvc/yuv_img.yuv', '-b', '../vvc/bitstream.bin', 
                    '-o', '../vvc/reconst.yuv', '--SourceWidth', str(w), '--SourceHeight', str(h), '-f', '1', '-fr', '1', '-q', str(qp)]
-    subprocess.call(VVC_command, stdout='../vvc/vvc_report.txt')
+    subprocess.call(VVC_command, stdout=vvc_report)
     bpp = os.path.getsize('../vvc/bitstream.bin') * 8 / (w*h)
     KB_num = os.path.getsize('../vvc/bitstream.bin') / 1024.0
-    yuv2png_command = ['ffmpeg', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', 'f"{w}x{h}"', '-src_range', '1', '-i', '../vvc/reconst.yuv',
+    yuv2png_command = ['ffmpeg', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f"{w}x{h}", '-src_range', '1', '-i', '../vvc/reconst.yuv',
                        '-frames', '1', '-pix_fmt', 'rgb24', '../vvc/output.png', '-y']
-    subprocess.call(yuv2png_command, stdout='../vvc/yuv2png_report.txt')
+    subprocess.call(yuv2png_command, stdout=yuv2png_report, stderr=subprocess.STDOUT)
+    jpg2yuv_report.close()
+    vvc_report.close()
+    yuv2png_report.close()
     rec = cv2.imread('../vvc/output.png')  # BGR
     rec = rec.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
     rec = np.ascontiguousarray(rec)
