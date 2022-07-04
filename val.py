@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 from threading import Thread
+from PIL import Image
 
 import numpy as np
 import torch
@@ -123,7 +124,8 @@ def run(data,
         compressibility_loss=None,
         compute_rec_loss = None,
         autoencoder=None,
-        rec_model = None
+        rec_model = None,
+        store_img = False,
         ):
     # Initialize/load model and set device
     training = model is not None
@@ -183,6 +185,7 @@ def run(data,
     # Configure
     model.eval()
     is_coco = isinstance(data.get('val'), str) and data['val'].endswith('coco/val2017.txt')  # COCO dataset
+    is_coco_128 = isinstance(data.get('path'), str) and data['path'].endswith('coco128')  # COCO dataset
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
@@ -210,6 +213,14 @@ def run(data,
     if arbitrary_dist is not None:
         pdf = np.load(arbitrary_dist)
     stats_bottleneck = StatCalculator(dist_range, bins, per_chs=True) if track_stats else None
+    pic_found = False
+    if is_coco:
+        # sample_image = '000000000885.jpg'
+        sample_image = '000000011615.jpg'
+    elif is_coco_128:
+        sample_image = '000000000241.jpg'
+    else:
+        sample_image = ''
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
         img = img.to(device, non_blocking=True)
@@ -233,6 +244,15 @@ def run(data,
             if compute_rec_loss:
                 rec_img = rec_model(T_bottleneck)
                 loss_rec += compute_rec_loss(img, rec_img)[1]
+            if store_img:    
+                if not pic_found:
+                    for rec, path in zip(list(rec_img), paths):
+                        if str(path).endswith(sample_image):
+                            pic = (rec.detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+                            im = Image.fromarray(np.moveaxis(pic,0,-1), 'RGB')
+                            im.save(store_img)
+                            pic_found = True
+                            break
         else:
             N=None
             if add_noise:
