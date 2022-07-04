@@ -119,7 +119,7 @@ def tiled_to_tensor(tiled, ch_w, ch_h, tensors_min, tensors_max):
 def compress_tensors(tensors, tensors_w, tensors_h, qp):
     data = tensors.cpu().numpy().flatten().astype(np.uint8)
     vvc_report = Path('../vvc/vvc_report.txt').open('w')
-    VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_latent.cfg', '-i', '../vvc/tiled_img.yuv', '-b', '../vvc/bitstream.bin', 
+    VVC_command = ['../vvc/EncoderAppStatic', '-c', '../vvc/encoder_intra_vtm_400.cfg', '-i', '../vvc/tiled_img.yuv', '-b', '../vvc/bitstream.bin', 
                    '-o', '../vvc/reconst.yuv', '--SourceWidth', str(tensors_w), '--SourceHeight', str(tensors_h), '-f', '1', '-fr', '1', '-q', str(qp)]
     to_be_coded_file = '../vvc/tiled_img.yuv'
     with open(to_be_coded_file, 'wb') as f:
@@ -140,7 +140,7 @@ def compress_input(img, qp, half=False):
     yuv2png_report = Path('../vvc/yuv2png_report.txt').open('w')
     jpg2yuv_command = ['ffmpeg', '-i', '../vvc/image.png', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-dst_range', '1', '../vvc/yuv_img.yuv', '-y']
     subprocess.call(jpg2yuv_command, stdout=jpg2yuv_report, stderr=subprocess.STDOUT)
-    VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_444.cfg', '-i', '../vvc/yuv_img.yuv', '-b', '../vvc/bitstream.bin', 
+    VVC_command = ['../vvc/EncoderAppStatic', '-c', '../vvc/encoder_intra_vtm_444.cfg', '-i', '../vvc/yuv_img.yuv', '-b', '../vvc/bitstream.bin', 
                    '-o', '../vvc/reconst.yuv', '--SourceWidth', str(w), '--SourceHeight', str(h), '-f', '1', '-fr', '1', '-q', str(qp)]
     subprocess.call(VVC_command, stdout=vvc_report)
     bpp = os.path.getsize('../vvc/bitstream.bin') * 8 / (w*h)
