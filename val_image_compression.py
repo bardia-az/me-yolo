@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder
+from models.supplemental import AutoEncoder, Decoder_Rec
 from utils.datasets import create_dataloader
 from utils.general import (LOGGER, StatCalculator, check_file, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
@@ -39,6 +39,7 @@ from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import output_to_target, plot_images, plot_val_study
 from utils.torch_utils import select_device, time_sync
 from utils.callbacks import Callbacks
+from utils.loss import ComputeRecLoss
 
 
 def save_one_txt(predn, save_conf, shape, file):
@@ -200,6 +201,14 @@ def val_closed_loop(opt,
         autoencoder.half() if half else autoencoder.float()
         autoencoder.eval()
         print('pretrained autoencoder')
+    # Loading Reconstruction model
+    rec_model = None
+    if 'rec_model' in ckpt:
+        rec_model = Decoder_Rec(cin=ckpt['rec_model'].cin, cout=ckpt['rec_model'].cout, autoenc_chs=autoenc_chs).to(device)
+        rec_model.load_state_dict(ckpt['rec_model'].float().state_dict())
+        rec_model.half() if half else rec_model.float()
+        rec_model.eval()
+        print('pretrained reconstruction model')
     
     # Data
     data = check_dataset(data)  # check
@@ -233,10 +242,12 @@ def val_closed_loop(opt,
     jdict, stats, ap, ap_class = [], [], [], []
 
     stats_error = StatCalculator(opt.dist_range, opt.bins) if track_stats else None
+    compute_rec_loss = ComputeRecLoss(MAX=1.0, w_grad=0, compute_grad=False)  # init loss class
 
     ch_num = chs_in_w * chs_in_h
     bpp_seq = []
     KB_seq = []
+    psnr_seq = []
 
     for fr, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         t1 = time_sync()
@@ -252,10 +263,12 @@ def val_closed_loop(opt,
         ch_h //= 8     # beware that the stride is 8 at layers 3 and 4
         
         if compression == 'input':
-            img, bpp, KB_num = compress_input(img, qp, half)
+            rec_img, bpp, KB_num = compress_input(img, qp, half)
             bpp_seq.append(bpp)
             KB_seq.append(KB_num)
-            out, _ = model(img)  # inference and training outputs
+            out, _ = model(rec_img)  # inference and training outputs
+            psnr = compute_rec_loss(img, rec_img)[1][2]
+            psnr_seq.append(psnr)
         elif compression == 'bottleneck':
             tensors = get_tensors(img, model, autoencoder)
             tiled_tensors = tensors_to_tiled(tensors, chs_in_w, chs_in_h, tensors_min, tensors_max)
@@ -264,6 +277,9 @@ def val_closed_loop(opt,
             KB_seq.append(KB_num)
             rec_tensors = rec_tensors.half() if half else rec_tensors.float()
             rec_tensors = tiled_to_tensor(rec_tensors, ch_w, ch_h, tensors_min, tensors_max)
+            rec_img = rec_model(rec_tensors[None, :])
+            psnr = compute_rec_loss(img, rec_img)[1][2]
+            psnr_seq.append(psnr)
             out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
             error = rec_tensors - tensors[0]
             if track_stats:
@@ -335,15 +351,16 @@ def val_closed_loop(opt,
 
     bpp_tot = sum(bpp_seq) / len(dataloader)
     MB_tot = sum(KB_seq) / 1024.0
+    psnr_tot = sum(psnr_seq) / len(dataloader)
 
     # Print results   
     pf = '%20s' + '%11i' * 2 + '%11.3g' * 4  # print format
     LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
     # Save results
     file = (save_dir / 'result').with_suffix('.csv')
-    s = '' if file.exists() else (('%20s,' * 7) % ('QP', 'bpp', 'MB_tot', 'mAP@.5 (%)', 'mAP@.5:.95 (%)', 'P', 'R')) + '\n'  # add header
+    s = '' if file.exists() else (('%20s,' * 8) % ('QP', 'bpp', 'MB_tot', 'psnr', 'mAP@.5 (%)', 'mAP@.5:.95 (%)', 'P', 'R')) + '\n'  # add header
     with open(file, 'a') as f:
-        f.write(s + (('%20.5g,' * 7) % (qp, bpp_tot, MB_tot, map50*100, map*100, mp, mr)) + '\n')
+        f.write(s + (('%20.5g,' * 8) % (qp, bpp_tot, MB_tot, psnr_tot, map50*100, map*100, mp, mr)) + '\n')
     
     if track_stats:
         stats_error.output_stats(save_dir, f'qp{qp}')
@@ -360,6 +377,7 @@ def val_closed_loop(opt,
 
     print(f'\nbit per pixel <qp{qp}> = {bpp_tot:.2f}')
     print(f'total size of the images (MB) <qp{qp}> = {MB_tot:.2f}')
+    print(f'mean PSNR (dB) <qp{qp}> = {psnr_tot:.2f}')
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
@@ -396,9 +414,9 @@ def val_closed_loop(opt,
             map, map50 = eval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
             # Save results
             file = (save_dir / 'result').with_suffix('.csv')
-            s = '' if file.exists() else (('%20s,' * 5) % ('QP', 'bpp', 'MB_tot', 'mAP@.5 (%)', 'mAP@.5:.95 (%)')) + '\n'  # add header
+            s = '' if file.exists() else (('%20s,' * 6) % ('QP', 'bpp', 'MB_tot', 'psnr', 'mAP@.5 (%)', 'mAP@.5:.95 (%)')) + '\n'  # add header
             with open(file, 'a') as f:
-                f.write(s + (('%20.5g,' * 5) % (qp, bpp_tot, MB_tot, map50*100, map*100)) + '\n')
+                f.write(s + (('%20.5g,' * 6) % (qp, bpp_tot, MB_tot, psnr_tot, map50*100, map*100)) + '\n')
         except Exception as e:
             LOGGER.info(f'pycocotools unable to run: {e}')
 

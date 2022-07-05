@@ -308,9 +308,10 @@ class CompressibilityLoss:
         return G_t
 
 class ComputeRecLoss:
-    def __init__(self, MAX, w_grad):
+    def __init__(self, MAX, w_grad, compute_grad=True):
         self.MAX = MAX
         self.w_grad = w_grad
+        self.compute_grad = compute_grad
     def __call__(self, T1, T2):
         device = T1.device
         loss_l1, loss_l2, psnr, grad_loss = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
@@ -319,7 +320,8 @@ class ComputeRecLoss:
         loss_l2[0] = torch.mean(mse)
         psnr_per_feature = 10 * torch.log10(self.MAX**2 / mse)
         psnr[0] = torch.mean(psnr_per_feature)
-        grad_loss[0] = img_gradient_loss(T1, T2)
+        if self.compute_grad:
+            grad_loss[0] = img_gradient_loss(T1, T2)
 
         # loss = loss_l2
         loss = loss_l1 + self.w_grad * grad_loss
