@@ -168,7 +168,7 @@ def compress_input(img, qp, half=False):
     jpg2yuv_command = ['ffmpeg', '-i', '../hevc/image.png', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-dst_range', '1', '../hevc/yuv_img.yuv', '-y']
     subprocess.call(jpg2yuv_command, stdout=jpg2yuv_report, stderr=subprocess.STDOUT)
     hevc_command = ['../hevc/TAppEncoderStatic', '-c', '../hevc/HM_encoder_intra_444.cfg', '-i', '../hevc/yuv_img.yuv', '-b', '../hevc/bitstream.bin', 
-                   '-o', '../hevc/reconst.yuv', '--wdt', str(w), '--hgt', str(h), '-f', '1', '-fr', '1', '-q', str(qp)]
+                   '-o', '../hevc/reconst.yuv', '-wdt', str(w), '-hgt', str(h), '-f', '1', '-fr', '1', '-q', str(qp)]
     subprocess.call(hevc_command, stdout=hevc_report, stderr=subprocess.STDOUT)
     bpp = os.path.getsize('../hevc/bitstream.bin') * 8 / (w*h)
     KB_num = os.path.getsize('../hevc/bitstream.bin') / 1024.0
