@@ -40,13 +40,20 @@ def gradient_img(img):
     G_y = nn.functional.conv2d(Y, ky, padding=1)
 
     G=torch.cat((G_x, G_y), dim=1)
-    return G 
 
-def img_gradient_loss(pred, gt):
-    G_pred = gradient_img(pred)
-    G_gt = gradient_img(gt)
+    G_mag = (G_x.square() + G_y.square()).sqrt()
+
+    return G , G_mag
+
+def img_gradient_loss(pred, gt, MAX):
+    G_pred, G_pred_mag = gradient_img(pred)
+    G_gt, G_gt_mag = gradient_img(gt)
     loss = l1_loss(G_pred, G_gt)
-    return loss
+    loss_mag = mse_loss(G_pred_mag, G_gt_mag, reduction='none').mean((2,3))
+    # loss_l2[0] = torch.mean(mse)
+    psnr_per_feature = 10 * torch.log10(MAX**2 / loss_mag)
+    psnr_mag = torch.mean(psnr_per_feature)
+    return loss, psnr_mag
 
 def compute_aux_loss(aux_list, backward=False):
     aux_loss_sum = 0
@@ -321,11 +328,11 @@ class ComputeRecLoss:
         psnr_per_feature = 10 * torch.log10(self.MAX**2 / mse)
         psnr[0] = torch.mean(psnr_per_feature)
         if self.compute_grad:
-            grad_loss[0] = img_gradient_loss(T1, T2)
+            grad_loss[0], psnr_mag = img_gradient_loss(T1, T2, self.MAX*4)
 
         # loss = loss_l2
         loss = loss_l1 + self.w_grad * grad_loss
-        return loss, torch.cat((loss_l1, loss_l2, psnr, grad_loss)).detach()
+        return loss, torch.cat((loss_l1, loss_l2, psnr, grad_loss)).detach(), psnr_mag.detach()
 
 class ComputeLossME:
     def __init__(self, device, MAX, w_features):

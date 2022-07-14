@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.experimental import attempt_load
-from models.supplemental import AutoEncoder
+from models.supplemental import AutoEncoder, Decoder_Rec
 from utils.datasets import create_dataloader
 from utils.general import (LOGGER, StatCalculator, box_iou, check_dataset, check_img_size, check_requirements, check_suffix, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
@@ -35,6 +35,7 @@ from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import output_to_target, plot_images, plot_val_study
 from utils.torch_utils import select_device, time_sync
 from utils.callbacks import Callbacks
+from utils.loss import ComputeRecLoss
 
 
 def save_one_txt(predn, save_conf, shape, file):
@@ -156,8 +157,16 @@ def run(data,
             autoencoder = AutoEncoder(autoenc_chs).to(device)
             autoencoder.load_state_dict(ckpt['autoencoder'].state_dict())
             autoencoder.half() if half else autoencoder.float()
-            autoencoder.eval()
+            # autoencoder.eval()
             print('pretrained autoencoder')
+        # Loading Reconstruction model
+        if 'rec_model' in ckpt:
+            rec_model = Decoder_Rec(cin=ckpt['rec_model'].cin, cout=ckpt['rec_model'].cout, autoenc_chs=autoenc_chs).to(device)
+            rec_model.load_state_dict(ckpt['rec_model'].float().state_dict())
+            rec_model.half() if half else rec_model.float()
+            # rec_model.eval()
+            compute_rec_loss = ComputeRecLoss(MAX=1.0, w_grad=0)  # init loss class
+            print('pretrained reconstruction model')
 
         # Data
         data = check_dataset(data, suffix=data_suffix)  # check
@@ -210,6 +219,7 @@ def run(data,
     loss_r = torch.zeros(1, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
     L1, L2, SATD = [], [], []
+    psnr_mag = 0
     if arbitrary_dist is not None:
         pdf = np.load(arbitrary_dist)
     stats_bottleneck = StatCalculator(dist_range, bins, per_chs=True) if track_stats else None
@@ -243,7 +253,9 @@ def run(data,
                 loss_r += compressibility_loss(T_bottleneck.float())[1]
             if compute_rec_loss:
                 rec_img = rec_model(T_bottleneck)
-                loss_rec += compute_rec_loss(img, rec_img)[1]
+                loss_rec_tmp, psnr_mag_tmp = compute_rec_loss(img, rec_img)[1:]
+                loss_rec += loss_rec_tmp
+                psnr_mag += psnr_mag_tmp
             if store_img:    
                 if not pic_found:
                     for rec, path in zip(list(rec_img), paths):
@@ -425,6 +437,12 @@ def run(data,
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
     loss_tot = torch.cat((loss, loss_r, loss_rec))
+
+    s = ('%11s' * 11) % ('lbox', 'lobj', 'lcls', 'lcmprss', 'rec_l1', 'rec_l2', 'psnr', 'grad_loss', 'gmag_psnr', 'mAP@.5', 'mAP@.5:.95')
+    pf = '%11.3g' * 11 # print format
+    LOGGER.info(s)
+    LOGGER.info(pf % (*loss_tot.cpu() / len(dataloader), psnr_mag / len(dataloader), map50, map))
+
     return (mp, mr, map50, map, *(loss_tot.cpu() / len(dataloader)).tolist()), maps, t
 
 
