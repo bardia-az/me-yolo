@@ -134,25 +134,51 @@ def compress_tensors(tensors, tensors_w, tensors_h, qp):
     return torch.from_numpy(tmp_reconst.copy()).to(tensors.device, non_blocking=True), bpp, KB_num
 
 def compress_input(img, qp, half=False):
+    # import cv2
+    # h, w = img.shape[-2:]
+    # jpg2yuv_report = Path('../vvc/jpg2yuv_report.txt').open('w')
+    # vvc_report = Path('../vvc/vvc_report.txt').open('w')
+    # yuv2png_report = Path('../vvc/yuv2png_report.txt').open('w')
+    # jpg2yuv_command = ['ffmpeg', '-i', '../vvc/image.png', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-dst_range', '1', '../vvc/yuv_img.yuv', '-y']
+    # subprocess.call(jpg2yuv_command, stdout=jpg2yuv_report, stderr=subprocess.STDOUT)
+    # VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_444.cfg', '-i', '../vvc/yuv_img.yuv', '-b', '../vvc/bitstream.bin', 
+    #                '-o', '../vvc/reconst.yuv', '--SourceWidth', str(w), '--SourceHeight', str(h), '-f', '1', '-fr', '1', '-q', str(qp)]
+    # subprocess.call(VVC_command, stdout=vvc_report)
+    # bpp = os.path.getsize('../vvc/bitstream.bin') * 8 / (w*h)
+    # KB_num = os.path.getsize('../vvc/bitstream.bin') / 1024.0
+    # yuv2png_command = ['ffmpeg', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f"{w}x{h}", '-src_range', '1', '-i', '../vvc/reconst.yuv',
+    #                    '-frames', '1', '-pix_fmt', 'rgb24', '../vvc/output.png', '-y']
+    # subprocess.call(yuv2png_command, stdout=yuv2png_report, stderr=subprocess.STDOUT)
+    # jpg2yuv_report.close()
+    # vvc_report.close()
+    # yuv2png_report.close()
+    # rec = cv2.imread('../vvc/output.png')  # BGR
+    # rec = rec.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+    # rec = np.ascontiguousarray(rec)
+    # rec = torch.from_numpy(rec).to(img.device, non_blocking=True)
+    # rec = rec.half() if half else rec.float()  # uint8 to fp16/32
+    # rec /= 255  # 0 - 255 to 0.0 - 1.0
+    # return rec.unsqueeze(0), bpp, KB_num
+
     import cv2
     h, w = img.shape[-2:]
-    jpg2yuv_report = Path('../vvc/jpg2yuv_report.txt').open('w')
-    vvc_report = Path('../vvc/vvc_report.txt').open('w')
-    yuv2png_report = Path('../vvc/yuv2png_report.txt').open('w')
-    jpg2yuv_command = ['ffmpeg', '-i', '../vvc/image.png', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-dst_range', '1', '../vvc/yuv_img.yuv', '-y']
+    jpg2yuv_report = Path('../hevc/jpg2yuv_report.txt').open('w')
+    hevc_report = Path('../hevc/hevc_report.txt').open('w')
+    yuv2png_report = Path('../hevc/yuv2png_report.txt').open('w')
+    jpg2yuv_command = ['ffmpeg', '-i', '../hevc/image.png', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-dst_range', '1', '../hevc/yuv_img.yuv', '-y']
     subprocess.call(jpg2yuv_command, stdout=jpg2yuv_report, stderr=subprocess.STDOUT)
-    VVC_command = ['../vvc/vvencFFapp', '-c', '../vvc/lowdelay_faster_444.cfg', '-i', '../vvc/yuv_img.yuv', '-b', '../vvc/bitstream.bin', 
-                   '-o', '../vvc/reconst.yuv', '--SourceWidth', str(w), '--SourceHeight', str(h), '-f', '1', '-fr', '1', '-q', str(qp)]
-    subprocess.call(VVC_command, stdout=vvc_report)
-    bpp = os.path.getsize('../vvc/bitstream.bin') * 8 / (w*h)
-    KB_num = os.path.getsize('../vvc/bitstream.bin') / 1024.0
-    yuv2png_command = ['ffmpeg', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f"{w}x{h}", '-src_range', '1', '-i', '../vvc/reconst.yuv',
-                       '-frames', '1', '-pix_fmt', 'rgb24', '../vvc/output.png', '-y']
+    hevc_command = ['../hevc/TAppEncoderStatic', '-c', '../hevc/HM_encoder_intra_444.cfg', '-i', '../hevc/yuv_img.yuv', '-b', '../hevc/bitstream.bin', 
+                   '-o', '../hevc/reconst.yuv', '--SourceWidth', str(w), '--SourceHeight', str(h), '-f', '1', '-fr', '1', '-q', str(qp)]
+    subprocess.call(hevc_command, stdout=hevc_report)
+    bpp = os.path.getsize('../hevc/bitstream.bin') * 8 / (w*h)
+    KB_num = os.path.getsize('../hevc/bitstream.bin') / 1024.0
+    yuv2png_command = ['ffmpeg', '-f', 'rawvideo', '-pix_fmt', 'yuv444p', '-s', f"{w}x{h}", '-src_range', '1', '-i', '../hevc/reconst.yuv',
+                       '-frames', '1', '-pix_fmt', 'rgb24', '../hevc/output.png', '-y']
     subprocess.call(yuv2png_command, stdout=yuv2png_report, stderr=subprocess.STDOUT)
     jpg2yuv_report.close()
-    vvc_report.close()
+    hevc_report.close()
     yuv2png_report.close()
-    rec = cv2.imread('../vvc/output.png')  # BGR
+    rec = cv2.imread('../hevc/output.png')  # BGR
     rec = rec.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
     rec = np.ascontiguousarray(rec)
     rec = torch.from_numpy(rec).to(img.device, non_blocking=True)
@@ -277,9 +303,10 @@ def val_closed_loop(opt,
             KB_seq.append(KB_num)
             rec_tensors = rec_tensors.half() if half else rec_tensors.float()
             rec_tensors = tiled_to_tensor(rec_tensors, ch_w, ch_h, tensors_min, tensors_max)
-            rec_img = rec_model(rec_tensors[None, :])
-            psnr = compute_rec_loss(img, rec_img)[1][2]
-            psnr_seq.append(psnr)
+            if rec_model is not None:
+                rec_img = rec_model(rec_tensors[None, :])
+                psnr = compute_rec_loss(img, rec_img)[1][2]
+                psnr_seq.append(psnr)
             out = get_yolo_prediction(rec_tensors[None, :], autoencoder, model)
             error = rec_tensors - tensors[0]
             if track_stats:
