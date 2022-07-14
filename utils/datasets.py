@@ -750,8 +750,8 @@ class LoadImagesAndLabels(Dataset):
 
         # Store the image
         if self.store_img:
-            # cv2.imwrite('../vvc/image.png', img)
-            cv2.imwrite('../hevc/image.png', img)
+            cv2.imwrite('../vvc/image.png', img)
+            # cv2.imwrite('../hevc/image.png', img)
         
         # Convert
         img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
