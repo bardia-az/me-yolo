@@ -396,7 +396,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     T = model(imgs, cut_model=1)  # first half of the model
                     T_bottleneck = autoencoder(T, task='enc')
                 rec_imgs = rec_model(T_bottleneck)
-                rec_loss, rec_loss_items = compute_rec_loss(imgs, rec_imgs)
+                rec_loss, rec_loss_items, _ = compute_rec_loss(imgs, rec_imgs)
                 if RANK != -1:
                     rec_loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -422,7 +422,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 pred = model(None, cut_model=2, T=T_hat)  # second half of the model
                 rec_imgs = rec_model(T_bottleneck)
 
-                rec_loss, rec_loss_items = compute_rec_loss(imgs, rec_imgs)
+                rec_loss, rec_loss_items, _ = compute_rec_loss(imgs, rec_imgs)
                 loss_o, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 # loss_r, loss_items_r = compressibility_loss(T_bottleneck)
                 loss_r, loss_items_r = 0, torch.zeros(1, device=device)
